@@ -1,0 +1,37 @@
+# Installer-generated configuration — holds live credentials and the encryption
+# key. Never committed; preserved across GitHub updates.
+/config/config.php
+.env
+
+# Customer uploads and runtime state
+/uploads/*
+!/uploads/.gitkeep
+!/uploads/.htaccess
+!/uploads/index.php
+
+/storage/cache/*
+/storage/sessions/*
+/storage/tmp/*
+/storage/updates/*
+/storage/rendered/*
+!/storage/*/.gitkeep
+/storage/installed.lock
+/storage/maintenance.flag
+
+/logs/*
+!/logs/.gitkeep
+!/logs/.htaccess
+!/logs/index.php
+
+/backups/database/*
+/backups/application/*
+!/backups/.gitkeep
+!/backups/.htaccess
+!/backups/index.php
+
+# Editors and OS noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

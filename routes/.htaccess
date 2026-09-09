@@ -1,0 +1,9 @@
+# This directory sits outside the web root. This file is defence in depth for
+# a misconfigured server that maps the project root as the document root.
+<IfModule mod_authz_core.c>
+    Require all denied
+</IfModule>
+<IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+</IfModule>
