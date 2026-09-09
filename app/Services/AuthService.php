@@ -5,6 +5,7 @@ namespace App\Services;
 
 use App\Core\Config;
 use App\Core\Csrf;
+use App\Core\Logger;
 use App\Core\Session;
 use App\Models\Admin;
 use App\Repositories\AdminRepository;
@@ -112,9 +113,24 @@ final class AuthService
         $this->limiter->clear('login:account:' . $email);
         $this->admins->recordSuccessfulLogin($admin->id(), $ip);
 
-        // Transparently upgrade a hash whose cost parameters have since changed.
-        if (password_needs_rehash($storedHash, $this->algorithm(), $this->algorithmOptions())) {
-            $this->admins->setPassword($admin->id(), $this->hash($password), false);
+        // Transparently upgrade a hash whose cost parameters have since
+        // changed.
+        //
+        // This is an optimisation, never a precondition. The password has
+        // already been verified by this point, so a problem with the *new*
+        // parameters must not turn a valid sign-in into a failure. It once
+        // did: an Argon2 thread count that one PHP build accepts and another
+        // rejects threw out of password_needs_rehash() and locked an operator
+        // out of their own installation.
+        try {
+            if (password_needs_rehash($storedHash, $this->algorithm(), $this->algorithmOptions())) {
+                $this->admins->setPassword($admin->id(), $this->hash($password), false);
+            }
+        } catch (\Throwable $e) {
+            Logger::error('Could not re-hash this password; signing in with the stored hash.', [
+                'admin_id' => $admin->id(),
+                'error' => $e->getMessage(),
+            ]);
         }
 
         $this->startSession($admin, $remember);
@@ -198,7 +214,20 @@ final class AuthService
 
     public function hash(string $password): string
     {
-        return password_hash($password, $this->algorithm(), $this->algorithmOptions());
+        try {
+            return password_hash($password, $this->algorithm(), $this->algorithmOptions());
+        } catch (\ValueError $e) {
+            // The configured parameters are not supported by this PHP build —
+            // Argon2 through libsodium, for one, accepts only threads=1.
+            // Refusing to set a password at all would be the worse outcome, so
+            // fall back to bcrypt, which every build has and which at cost 12
+            // is still a sound choice, and say loudly that the configuration
+            // needs attention.
+            Logger::error('Configured password hashing options are unsupported here; used bcrypt instead.', [
+                'error' => $e->getMessage(),
+            ]);
+            return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+        }
     }
 
     private function algorithm(): string|int

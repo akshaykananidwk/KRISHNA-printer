@@ -18,9 +18,15 @@ treated as a search term.
 - Cookies are `HttpOnly`, `Secure` (once HTTPS is enforced) and `SameSite=Lax`.
 - The session ID is **regenerated on sign-in**, so a fixated session cannot
   survive authentication.
-- Passwords use `password_hash()` — bcrypt at cost 12 by default, switchable to
-  Argon2id in `config/security.php` — never a home-made scheme. Verified as test
-  `T22.4`.
+- Passwords use `password_hash()` — Argon2id where the build provides it,
+  bcrypt at cost 12 otherwise, configured in `config/security.php` — never a
+  home-made scheme. Verified as test `T22.4`.
+- Argon2's `threads` stays at 1: PHP's Argon2 comes from libargon2 or libsodium
+  depending on the build and the sodium one rejects anything higher. A hashing
+  configuration this server cannot satisfy is logged and falls back to bcrypt
+  rather than refusing a correct password — re-hashing happens *after*
+  verification and must never turn a valid sign-in into a failure. Verified as
+  tests `T22.5` and `T22.6`.
 - The password policy rejects the short, the obvious, and anything guessable
   from context such as the admin's own email or the business name. Verified as
   tests `T28.7` and `T28.8`.

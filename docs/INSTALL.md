@@ -84,6 +84,24 @@ reached PHP. Work down this list:
 5. **Is PHP running at all?** If `index.php` downloads as a file instead of
    executing, PHP is not wired into Apache for this vhost.
 
+### Troubleshooting: Error 500 when signing in
+
+Every 500 page carries a reference code; find the matching line in
+`logs/app-<date>.log` (the file is named by UTC date, which may be yesterday's
+date locally). See [OPERATIONS.md](OPERATIONS.md#diagnosing-a-500).
+
+One cause is worth naming because it depends on how PHP was compiled:
+
+> `ValueError: A thread value other than 1 is not supported by this implementation`
+
+PHP's Argon2 support comes from either libargon2 or libsodium depending on the
+build, and the libsodium one accepts only `threads => 1`. `config/security.php`
+ships with `1`, which both accept. If you raise it, sign-in will fail on a
+sodium build — the application now logs the problem and signs the user in on
+the stored hash rather than refusing a correct password, but the setting is
+still wrong. The installer's requirements screen reports **Password hashing**
+as failing when the configured options do not work on that server.
+
 ---
 
 ## 2. Create the database

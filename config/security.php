@@ -9,7 +9,14 @@ return [
         'argon_options' => [
             'memory_cost' => 65536,
             'time_cost' => 4,
-            'threads' => 2,
+            // Must stay 1. PHP's Argon2 comes from either libargon2 or
+            // libsodium depending on how the binary was built, and the sodium
+            // implementation supports only a single thread — it raises
+            // "A thread value other than 1 is not supported by this
+            // implementation" for anything else. A higher value therefore
+            // works on one server and is fatal on the next, and PHP's own
+            // default here is 1 regardless.
+            'threads' => 1,
         ],
         'bcrypt_options' => ['cost' => 12],
         'min_length' => 10,

@@ -62,6 +62,35 @@ final class HealthCheckService
             );
         }
 
+        // Prove the configured password parameters work on this build rather
+        // than discovering it when an administrator cannot sign in. PHP's
+        // Argon2 comes from libargon2 or libsodium depending on how the binary
+        // was compiled, and they do not accept the same options — sodium
+        // rejects any thread count above 1.
+        $algorithm = Config::get('security.password.algorithm')
+            ?? (defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT);
+        $hashOptions = defined('PASSWORD_ARGON2ID') && $algorithm === PASSWORD_ARGON2ID
+            ? (array) Config::get('security.password.argon_options', [])
+            : (array) Config::get('security.password.bcrypt_options', ['cost' => 12]);
+
+        $hashError = '';
+        try {
+            password_hash('requirement-probe', $algorithm, $hashOptions);
+        } catch (\Throwable $e) {
+            $hashError = $e->getMessage();
+        }
+
+        $checks[] = $this->check(
+            'Password hashing',
+            $hashError === '',
+            $hashError === ''
+                ? (defined('PASSWORD_ARGON2ID') && $algorithm === PASSWORD_ARGON2ID ? 'Argon2id' : 'bcrypt')
+                    . ' with the configured options'
+                : $hashError,
+            'the configured algorithm and options must work on this server',
+            false
+        );
+
         $uploadMax = $this->bytesFromIni((string) ini_get('upload_max_filesize'));
         $postMax = $this->bytesFromIni((string) ini_get('post_max_size'));
         $needed = (int) Config::get('uploads.max_file_bytes', 26214400);

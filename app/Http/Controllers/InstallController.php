@@ -6,6 +6,7 @@ namespace App\Http\Controllers;
 use App\Core\Config;
 use App\Core\Database;
 use App\Core\Encrypter;
+use App\Core\Logger;
 use App\Core\Migrator;
 use App\Core\Request;
 use App\Core\Response;
@@ -42,6 +43,33 @@ final class InstallController extends Controller
 
     public function __construct(private HealthCheckService $health)
     {
+    }
+
+    /**
+     * Hash the first administrator's password using the configured algorithm.
+     *
+     * Mirrors AuthService::hash(). PHP's Argon2 comes from libargon2 or
+     * libsodium depending on the build, and the sodium one rejects any thread
+     * count above 1, so a configuration that is valid on one server can throw
+     * on another. bcrypt is the universal fallback rather than a failed
+     * install.
+     */
+    private function hashPassword(string $password): string
+    {
+        $algorithm = Config::get('security.password.algorithm')
+            ?? (defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT);
+        $options = defined('PASSWORD_ARGON2ID') && $algorithm === PASSWORD_ARGON2ID
+            ? (array) Config::get('security.password.argon_options', [])
+            : (array) Config::get('security.password.bcrypt_options', ['cost' => 12]);
+
+        try {
+            return password_hash($password, $algorithm, $options);
+        } catch (\ValueError $e) {
+            Logger::error('Configured password hashing options are unsupported here; used bcrypt instead.', [
+                'error' => $e->getMessage(),
+            ]);
+            return password_hash($password, PASSWORD_BCRYPT, ['cost' => 12]);
+        }
     }
 
     /** GET /install */
@@ -292,10 +320,11 @@ final class InstallController extends Controller
             'admin_name' => (string) $data['admin_name'],
             'admin_email' => mb_strtolower((string) $data['admin_email']),
             // Hashed immediately — the plaintext never reaches the session store.
-            'admin_password_hash' => password_hash(
-                (string) $data['admin_password'],
-                defined('PASSWORD_ARGON2ID') ? PASSWORD_ARGON2ID : PASSWORD_BCRYPT
-            ),
+            // Hashed with the same parameters the application will later check
+            // against, so the first sign-in does not immediately rewrite it —
+            // and so an unsupported setting surfaces here, during install,
+            // rather than at the operator's first login.
+            'admin_password_hash' => $this->hashPassword((string) $data['admin_password']),
         ]);
 
         $this->completeStep(4);

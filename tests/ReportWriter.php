@@ -167,7 +167,7 @@ final class ReportWriter
             19 => ['Retry', ['T19.1', 'T19.2']],
             20 => ['Job cancellation', ['T20.1', 'T20.2']],
             21 => ['File cleanup', ['T21.1', 'T21.2']],
-            22 => ['Admin authentication', ['T22.1', 'T22.2', 'T22.3', 'T22.4']],
+            22 => ['Admin authentication', ['T22.1', 'T22.2', 'T22.3', 'T22.4', 'T22.5', 'T22.6']],
             23 => ['Security validation', ['T23.1', 'T23.2', 'T23.3', 'T23.4', 'T23.5', 'T23.6', 'T23.7', 'T23.8']],
             24 => ['Database migration', ['T24.1', 'T24.2', 'T24.3']],
             25 => ['Backup', ['T25.1', 'T25.2', 'T25.3']],

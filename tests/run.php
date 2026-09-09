@@ -447,6 +447,87 @@ $runner->test('T22.4', 'Passwords are stored hashed, never in plain text', 'an A
     );
 });
 
+$runner->test('T22.5', 'A hashing configuration this server cannot satisfy still lets an admin in', 'sign-in succeeds, no exception', function () use ($basePath, $adminEmail, $adminPassword) {
+    // Regression: an Argon2 thread count that libargon2 accepts and libsodium
+    // rejects threw out of password_needs_rehash() on a live server and locked
+    // the operator out of their own installation with a 500. Re-hashing is an
+    // optimisation applied *after* the password has been verified, so it must
+    // never be able to refuse a correct credential.
+    //
+    // Driven in-process rather than over HTTP. The obvious version — rewrite
+    // config/security.php, then sign in — looked fine and tested nothing: the
+    // application process serves the file from a stale stat cache, so the
+    // request that follows a millisecond later still sees the old options. It
+    // passed just as happily against a build with both guards deleted. This
+    // sets the option directly in the configuration the service reads, which
+    // is the same code path and is deterministic.
+    /** @var App\Core\Application $app */
+    $app = require $basePath . '/bootstrap/app.php';
+    $container = $app->container();
+
+    $original = App\Core\Config::get('security.password.argon_options');
+
+    // Unsupported on every build, and the same ValueError that the sodium
+    // thread limit raises.
+    App\Core\Config::set('security.password.algorithm', PASSWORD_ARGON2ID);
+    App\Core\Config::set('security.password.argon_options', [
+        'memory_cost' => 1, 'time_cost' => 4, 'threads' => 1,
+    ]);
+
+    try {
+        $auth = $container->get(App\Services\AuthService::class);
+        $result = $auth->attempt($adminEmail, $adminPassword, '127.0.0.1');
+
+        $signedIn = ($result['success'] ?? false) === true;
+
+        // The credential must still work afterwards, whichever hash was stored.
+        $db = new Database([
+            'driver' => 'mysql', 'host' => '127.0.0.1', 'port' => 3306,
+            'database' => 'kpms_live', 'username' => 'kpms', 'password' => 'kpms_pass_123',
+        ]);
+        $hash = (string) $db->scalar('SELECT password_hash FROM admins WHERE email = ?', [$adminEmail]);
+        $stillVerifies = password_verify($adminPassword, $hash);
+
+        return TestRunner::assertTrue(
+            $signedIn && $stillVerifies,
+            'Signed in despite hashing options this build rejects; the stored password still '
+                . 'verifies (' . substr($hash, 0, 7) . '…).',
+            sprintf('signed in=%s, password still verifies=%s, error=%s',
+                $signedIn ? 'yes' : 'no',
+                $stillVerifies ? 'yes' : 'no',
+                (string) ($result['error'] ?? '—'))
+        );
+    } finally {
+        App\Core\Config::set('security.password.argon_options', $original);
+    }
+});
+
+$runner->test('T22.6', 'Unusable hashing options are reported before anyone is locked out', 'the requirement check fails loudly', function () use ($basePath) {
+    App\Core\Config::load($basePath . '/config');
+
+    $probe = static function (array $options): bool {
+        try {
+            password_hash('probe', PASSWORD_ARGON2ID, $options);
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    };
+
+    $configured = (array) App\Core\Config::get('security.password.argon_options', []);
+    $configuredWorks = !defined('PASSWORD_ARGON2ID') || $probe($configured);
+    $brokenIsCaught = !defined('PASSWORD_ARGON2ID')
+        || !$probe(['memory_cost' => 1, 'time_cost' => 4, 'threads' => 1]);
+
+    return TestRunner::assertTrue(
+        $configuredWorks && $brokenIsCaught,
+        'The shipped options hash successfully here, and the probe that the health check uses '
+            . 'does detect options this build cannot satisfy.',
+        sprintf('configured options work=%s, bad options detected=%s',
+            $configuredWorks ? 'yes' : 'no', $brokenIsCaught ? 'yes' : 'no')
+    );
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // 23. Security validation
 // ═══════════════════════════════════════════════════════════════════════
