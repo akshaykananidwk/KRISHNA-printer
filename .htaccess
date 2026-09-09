@@ -1,0 +1,32 @@
+# Fallback front controller for servers whose document root is the PROJECT
+# root rather than public/.
+#
+# The correct setup is to point the vhost's DocumentRoot at public/, which
+# keeps everything else off the web entirely. On shared hosting that is often
+# not possible — the panel fixes the document root at public_html — so this
+# file forwards every request into public/ instead. Without it Apache looks
+# for a literal /install directory, does not find one, and answers with its
+# own 404 before PHP is ever reached.
+#
+# Every directory that must not be served carries its own "Require all denied"
+# .htaccess, so this fallback does not expose config, uploads or storage.
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    RewriteBase /
+
+    # A real file inside public/ (css, js, images) is served from there.
+    RewriteCond %{DOCUMENT_ROOT}/public%{REQUEST_URI} -f
+    RewriteRule ^(.*)$ public/$1 [L]
+
+    # Everything else is a route: hand it to the front controller.
+    RewriteRule ^ public/index.php [QSA,L]
+</IfModule>
+
+# If mod_rewrite is unavailable the application cannot route at all. Say so
+# rather than leaving a bare Apache 404 that looks like the files are missing.
+<IfModule !mod_rewrite.c>
+    ErrorDocument 404 "mod_rewrite is not enabled. Enable it (a2enmod rewrite) and make sure AllowOverride All is set for this directory."
+</IfModule>
+
+Options -Indexes

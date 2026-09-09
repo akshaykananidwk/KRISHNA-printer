@@ -31,10 +31,58 @@ the required ones pass.
 | `memory_limit` | 128M or more |
 | `max_execution_time` | 60s or more — updates need the time |
 
-**Web server.** Point the document root at `public/`. Nothing above it should be
-reachable. An nginx example is in `nginx.conf.example`; Apache users get the
-shipped `.htaccess` files. HTTPS is required in production — the application
-enforces it once `force_https` is on.
+**Web server.** HTTPS is required in production — the application enforces it
+once `force_https` is on. An nginx example is in `nginx.conf.example`. Apache
+setup is below.
+
+### Apache
+
+**Preferred — point the document root at `public/`:**
+
+```apache
+<VirtualHost *:443>
+    ServerName print.example.com
+    DocumentRoot /var/www/krishna-printer/public
+
+    <Directory /var/www/krishna-printer/public>
+        AllowOverride All
+        Require all granted
+    </Directory>
+</VirtualHost>
+```
+
+`AllowOverride All` matters: without it Apache ignores `.htaccess`, no
+rewriting happens, and every route returns Apache's own 404. `mod_rewrite`
+must be enabled (`a2enmod rewrite`).
+
+**Shared hosting — document root fixed at `public_html`:** upload the whole
+project there. The root `.htaccess` forwards every request into `public/`, so
+no panel change is needed. Each directory that must not be served carries its
+own `Require all denied`, and anything that is not a real file inside `public/`
+goes to the front controller — so no PHP source outside `public/` is ever
+served or executed.
+
+Both layouts are tested: `/install` returns the wizard, and `/config/app.php`,
+`/app/Core/Router.php` and `/storage/` are refused.
+
+### Troubleshooting: "Not Found — Apache Server at … Port 443"
+
+Apache's *own* 404 page (rather than the application's) means the request never
+reached PHP. Work down this list:
+
+1. **Is `.htaccess` being read?** In the vhost or `<Directory>` block for your
+   document root, set `AllowOverride All`. On cPanel this is usually already
+   set; on a self-managed server it defaults to `None`, which silently disables
+   every `.htaccess` in the project.
+2. **Is `mod_rewrite` enabled?** `a2enmod rewrite && systemctl restart apache2`.
+   Check with `apachectl -M | grep rewrite`.
+3. **Did the root `.htaccess` upload?** It starts with a dot, so many FTP
+   clients hide it and skip it. Confirm it exists next to `README.md`.
+4. **Where does the document root point?** If `https://your-domain/public/install`
+   works but `https://your-domain/install` does not, the document root is the
+   project root and step 3 is your problem.
+5. **Is PHP running at all?** If `index.php` downloads as a file instead of
+   executing, PHP is not wired into Apache for this vhost.
 
 ---
 
