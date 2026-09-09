@@ -147,8 +147,29 @@ print and last error.
 reporting has its printers marked offline within a minute, and they stop being
 offered to customers.
 
-**Logs** are in `logs/`. The audit trail — who changed what, and when — is in
-Admin → System → Activity, backed by `activity_logs`.
+**Logs** are in `logs/`, one file per UTC day (`app-2026-09-09.log`). The
+directory is refused by the web server, so it can only be read over
+SSH/SFTP or a hosting file manager.
+
+### Diagnosing a 500
+
+The error page carries a **reference** such as `06cdd735`. Search that day's
+log for it:
+
+```bash
+grep 06cdd735 logs/app-*.log
+```
+
+The matching line names the exception, the message, the file and line, the
+request path and the full stack trace — enough to identify the cause without
+turning on debug mode on a live site.
+
+If you do need the error on screen, set `'app_debug' => true` in
+`config/config.php`, reproduce it, then **set it back to `false`** — debug
+output exposes internals to anyone who can reach the URL.
+
+The audit trail — who changed what, and when — is in Admin → System →
+Activity, backed by `activity_logs`.
 
 ### When a printer goes offline
 

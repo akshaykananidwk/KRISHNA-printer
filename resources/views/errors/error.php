@@ -1,5 +1,5 @@
 <?php
-/** @var int $status @var string $message @var Throwable|null $debug */
+/** @var int $status @var string $message @var Throwable|null $debug @var string $reference */
 
 use App\Core\View;
 
@@ -42,6 +42,9 @@ $title = $titles[$status] ?? 'Error';
       padding: .7rem 1.3rem; border-radius: 9px; font-weight: 600; }
   pre { text-align: left; background: #14261f; color: #9ff5d0; padding: .9rem;
         border-radius: 9px; overflow-x: auto; font-size: .78rem; margin-top: 1.2rem; }
+  .ref { margin-top: 1.3rem; font-size: .78rem; color: #8a9691; }
+  .ref code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+              background: #eef2f0; padding: .15rem .4rem; border-radius: 5px; color: #14261f; }
 </style>
 </head>
 <body>
@@ -50,6 +53,11 @@ $title = $titles[$status] ?? 'Error';
   <h1><?= View::e($title) ?></h1>
   <p><?= View::e($message) ?></p>
   <a href="/">Go back</a>
+
+  <?php if (($reference ?? '') !== ''): ?>
+    <p class="ref">Reference <code><?= View::e((string) $reference) ?></code><br>
+    Search the log in <code>logs/</code> for this code to see what failed.</p>
+  <?php endif; ?>
 
   <?php if ($debug !== null): ?>
     <pre><?= View::e($debug::class . ': ' . $debug->getMessage()) ?>

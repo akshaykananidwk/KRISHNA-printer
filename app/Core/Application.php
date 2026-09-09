@@ -154,13 +154,20 @@ final class Application
         $status = $e instanceof HttpException ? $e->statusCode() : 500;
         $headers = $e instanceof HttpException ? $e->headers() : [];
 
+        // A short reference shared between the page and the log line. Without
+        // it the operator sees "an unexpected error occurred" and has to guess
+        // which of the day's log entries was theirs.
+        $reference = '';
+
         if ($status >= 500) {
+            $reference = bin2hex(random_bytes(4));
             Logger::error('Unhandled exception', [
+                'reference' => $reference,
                 'exception' => $e::class,
                 'message' => $e->getMessage(),
                 'file' => $e->getFile() . ':' . $e->getLine(),
                 'path' => $request->path(),
-                'trace' => Config::get('app.debug', false) ? $e->getTraceAsString() : null,
+                'trace' => $e->getTraceAsString(),
             ]);
         }
 
@@ -171,6 +178,9 @@ final class Application
 
         if ($request->isAjax() || str_starts_with($request->path(), '/api/')) {
             $payload = ['success' => false, 'error' => $message, 'status' => $status];
+            if ($reference !== '') {
+                $payload['reference'] = $reference;
+            }
             if ($e instanceof ValidationException) {
                 $payload['errors'] = $e->errors();
             }
@@ -187,6 +197,7 @@ final class Application
                     'status' => $status,
                     'message' => $message,
                     'debug' => $debug ? $e : null,
+                    'reference' => $reference,
                 ]);
             } catch (\Throwable) {
                 $html = '<!doctype html><meta charset="utf-8"><title>Error ' . $status . '</title>'
