@@ -2790,6 +2790,89 @@ $runner->test('TH.2', 'A failed admin save stays in the admin panel', 'the reaso
     );
 });
 
+$runner->test('TB.1', 'An agent can report a failure that is not worth retrying', 'false is a value, not a missing one', function () use ($baseUrl, $connectDb, $adminClient) {
+    // PHP casts the boolean false to the empty string, so a JSON body carrying
+    // `false` was compared as "" against a list of boolean-looking strings and
+    // rejected. Only `true` ever got through. An agent reporting a job failed
+    // and NOT retryable - LibreOffice missing, an unsupported format - could
+    // therefore never report it at all: the job sat until its lease expired,
+    // was requeued, failed again, and went round for ever.
+    $db = $connectDb();
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+
+    $adminClient->get('/admin/devices');
+    $page = $adminClient->submitForm('/admin/devices', [
+        'name' => 'Boolean Report Agent',
+        'location_id' => (string) $locationId,
+        'poll_interval_secs' => '10',
+    ]);
+    if (preg_match('#id="agentToken">([^<]+)<#', $page['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'No agent token was issued.'];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+
+    // The real endpoint, through the real middleware. The lease is deliberately
+    // not a live one: what is under test is whether the body survives
+    // validation, and a rejected `retryable` fails before the lease is ever
+    // looked at. A 422 naming that field is the bug; anything else is not.
+    $report = static function (string $number, $retryable) use ($baseUrl, $token): array {
+        $curl = curl_init($baseUrl . '/api/agent/jobs/' . $number . '/status');
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => 'POST',
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token, 'Content-Type: application/json'],
+            CURLOPT_POSTFIELDS => json_encode([
+                'status' => 'failed',
+                'lease_token' => str_repeat('a', 32),
+                'message' => 'LibreOffice is not installed on this agent.',
+                'error_code' => 'conversion_failed',
+                'retryable' => $retryable,
+            ]),
+        ]);
+        $body = (string) curl_exec($curl);
+        $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        curl_close($curl);
+        return [$status, json_decode($body, true) ?: [], $body];
+    };
+
+    // A job this device really owns. The controller looks the job up BEFORE it
+    // validates the body, so a made-up number 404s and never reaches the rule
+    // under test - which is exactly how the first version of this check passed
+    // against the bug it was written for.
+    $jobNumber = (string) $db->scalar('SELECT job_number FROM print_jobs ORDER BY id DESC LIMIT 1');
+    if ($jobNumber === '') {
+        return ['pass' => false, 'actual' => 'No job exists to report against.'];
+    }
+    // print_jobs.device_id is the agent that CLAIMED the job, and that is what
+    // the controller checks. Lend the job to this agent for the two calls.
+    $deviceId = (int) $db->scalar('SELECT id FROM devices ORDER BY id DESC LIMIT 1');
+    $originalDevice = $db->scalar('SELECT device_id FROM print_jobs WHERE job_number = ?', [$jobNumber]);
+    $db->execute('UPDATE print_jobs SET device_id = ? WHERE job_number = ?', [$deviceId, $jobNumber]);
+
+    try {
+        [$falseStatus, $falseJson, $falseBody] = $report($jobNumber, false);
+        [$trueStatus, $trueJson, $trueBody] = $report($jobNumber, true);
+    } finally {
+        $db->execute('UPDATE print_jobs SET device_id = ? WHERE job_number = ?', [$originalDevice, $jobNumber]);
+    }
+
+    $rejectedField = static fn (array $json): bool =>
+        isset($json['errors']['retryable']);
+
+    return TestRunner::assertTrue(
+        !$rejectedField($falseJson) && !$rejectedField($trueJson)
+            && $falseStatus === 409 && $trueStatus === 409,
+        sprintf(
+            'Both true and false got past validation and were refused on the lease instead '
+            . '(HTTP %d and %d) - so a permanent failure can be reported and the job stops '
+            . 'going round.',
+            $falseStatus, $trueStatus
+        ),
+        sprintf('false -> HTTP %d %s | true -> HTTP %d %s',
+            $falseStatus, substr($falseBody, 0, 200), $trueStatus, substr($trueBody, 0, 200))
+    );
+});
+
 $runner->test('TU.1', 'A release is only published when it can be verified', 'version, https and a checksum, or nothing', function () use ($connectDb, $adminClient) {
     $db = $connectDb();
     $read = static fn (): array => [

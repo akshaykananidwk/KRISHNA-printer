@@ -99,7 +99,14 @@ final class Validator
             'numeric' => is_numeric($value) ? null : "$label must be a number.",
             'decimal' => preg_match('/^\d{1,10}(\.\d{1,4})?$/', (string) $value) === 1
                 ? null : "$label must be a valid amount.",
-            'bool', 'boolean' => in_array((string) $value, ['0', '1', 'true', 'false', 'on', 'off', 'yes', 'no'], true)
+            // is_bool first, and not merely for tidiness: PHP casts the boolean
+            // false to the empty string, so a JSON body carrying `false` was
+            // compared as "" and rejected by a rule asking for a boolean. Only
+            // `true` ever got through. A print agent reporting a job as failed
+            // and not retryable could therefore never report it at all — the
+            // job sat until its lease expired and was requeued, forever.
+            'bool', 'boolean' => is_bool($value)
+                || in_array((string) $value, ['0', '1', 'true', 'false', 'on', 'off', 'yes', 'no'], true)
                 ? null : "$label must be true or false.",
             'email' => filter_var((string) $value, FILTER_VALIDATE_EMAIL) !== false && strlen((string) $value) <= 190
                 ? null : "$label must be a valid email address.",

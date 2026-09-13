@@ -415,6 +415,28 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
+    # --- Saying which backend refused --------------------------------------
+    print("Naming the backend")
+
+    source = AGENT.read_text()
+
+    # The log read "CUPS rejected job AK100023" on a Windows counter PC, which
+    # sends whoever reads it looking for a CUPS that is not installed and never
+    # was.
+    check("each backend says what it is",
+          agent.Cups.label == "CUPS" and "Windows" in agent.Windows.label,
+          f"cups={agent.Cups.label!r} windows={agent.Windows.label!r}")
+
+    # Only messages about a job: "CUPS tools not found" is the CUPS backend
+    # talking about itself, which is correct and must stay.
+    hard_coded = [
+        line.strip() for line in source.splitlines()
+        if "log." in line and "CUPS" in line and "job_number" in line
+    ]
+    check("the rejection is logged against the backend that rejected it",
+          "self.spooler.label" in source and hard_coded == [],
+          f"hard-coded CUPS in a message both backends produce: {hard_coded}")
+
     # --- Updating itself ---------------------------------------------------
     print("Updating the software")
 
@@ -547,7 +569,6 @@ def main() -> int:
     # Nothing may call subprocess.run directly: on Windows that is a console
     # window appearing over whatever the operator is doing, several times a
     # minute, for as long as the agent is up.
-    source = AGENT.read_text()
     direct = [
         (number, line.strip())
         for number, line in enumerate(source.splitlines(), 1)

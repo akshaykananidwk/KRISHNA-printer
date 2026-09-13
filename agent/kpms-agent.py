@@ -363,6 +363,10 @@ class Api:
 class Cups:
     """Wrapper over the CUPS command-line tools."""
 
+    # Named in the log rather than hard-coding "CUPS" at each call site: on a
+    # Windows counter PC the log read "CUPS rejected job AK100023", which
+    # sends whoever is reading it looking for a CUPS that is not there.
+    label = "CUPS"
     direct_formats = DIRECT_FORMATS
     convert_formats = CONVERT_FORMATS
 
@@ -678,6 +682,7 @@ class Windows:
     time, which is what makes that safe.
     """
 
+    label = "The Windows print spooler"
     direct_formats = WINDOWS_DIRECT_FORMATS
     convert_formats = WINDOWS_CONVERT_FORMATS
 
@@ -1389,14 +1394,14 @@ class Agent:
             )
 
             if not accepted:
-                log.error("CUPS rejected job %s: %s", job_number, message)
+                log.error("%s rejected job %s: %s", self.spooler.label, job_number, message)
                 self.safe_report(job_number, lease, "failed",
                                  message=f"The printer queue rejected the job: {message}",
                                  error_code="cups_rejected",
                                  retryable=True)
                 return
 
-            log.info("Submitted %s to CUPS as %s", job_number, cups_job or "(no id)")
+            log.info("Submitted %s to %s as %s", job_number, self.spooler.label, cups_job or "(no id)")
             self.safe_report(job_number, lease, "printing",
                              message=(note + " " if note else "") + "Submitted to the printer queue.",
                              remote_job_id=cups_job)
