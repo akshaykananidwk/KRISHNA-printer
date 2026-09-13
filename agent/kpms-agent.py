@@ -55,6 +55,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import tempfile
 import time
 import urllib.error
@@ -1068,8 +1069,17 @@ class Agent:
         if not self.printers:
             log.warning("No printers are assigned to this agent yet. Add one in the admin panel.")
 
-        signal.signal(signal.SIGTERM, self.stop)
-        signal.signal(signal.SIGINT, self.stop)
+        # Only the main thread may install signal handlers. The desktop app
+        # runs this in a worker, where attempting to raised ValueError and
+        # killed the agent before its first heartbeat - the admin panel showed
+        # the agent as "pending" for ever and nobody could see why. Started
+        # from a service or the command line it is the main thread, and the
+        # handlers are installed as before.
+        if threading.current_thread() is threading.main_thread():
+            signal.signal(signal.SIGTERM, self.stop)
+            signal.signal(signal.SIGINT, self.stop)
+        else:
+            log.info("Running in a worker thread; stop it from the window rather than a signal.")
 
         backoff = 1
 

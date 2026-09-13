@@ -413,6 +413,91 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
+    # --- Running inside the desktop window ---------------------------------
+    print("Running on a worker thread")
+
+    # The desktop app runs the agent on a background thread so the window
+    # stays responsive. Installing a signal handler off the main thread raises
+    # ValueError, and it was raised *before* the first heartbeat: the agent
+    # looked registered but the admin panel showed it pending, last seen
+    # never, with the reason only visible in the app's log pane.
+    import threading
+    import time as _time
+
+    with tempfile.TemporaryDirectory() as tmp:
+        worker_config = agent.Config(
+            server="https://nowhere.invalid", token="t",
+            work_dir=Path(tmp), poll_interval=1, heartbeat_interval=0,
+        )
+        worker = agent.Agent(worker_config)
+
+        beats = []
+        worker.api = type("Api", (), {
+            "config_call": lambda self: {"device": {"name": "counter", "poll_interval": 1},
+                                         "printers": []},
+            "heartbeat": lambda self, printers: beats.append(printers) or {},
+            "claim": lambda self: {},
+        })()
+
+        saved_spooler = agent.select_spooler
+        agent.select_spooler = lambda: agent.Cups
+        raised: list[str] = []
+        returned: list[int] = []
+        try:
+            def body():
+                try:
+                    returned.append(worker.run())
+                except BaseException as error:        # noqa: BLE001 - that is the point
+                    raised.append(f"{error.__class__.__name__}: {error}")
+
+            thread = threading.Thread(target=body, daemon=True)
+            thread.start()
+            deadline = _time.monotonic() + 10
+            while not beats and not raised and _time.monotonic() < deadline:
+                _time.sleep(0.05)
+            worker.stop()
+            thread.join(timeout=10)
+        finally:
+            agent.select_spooler = saved_spooler
+
+        check("run() on a worker thread raises nothing", not raised,
+              raised[0] if raised else "")
+        check("it reaches the heartbeat loop", bool(beats), "no heartbeat was sent")
+        check("it stops cleanly when the window asks it to",
+              returned == [0] and not thread.is_alive(),
+              f"returned {returned}, alive={thread.is_alive()}")
+
+    # On the main thread - a service, or the command line - the handlers are
+    # still installed, so systemd and Ctrl-C shut it down as they always did.
+    import signal as _signal
+
+    installed = []
+    saved_signal = _signal.signal
+    saved_spooler = agent.select_spooler
+    try:
+        agent.select_spooler = lambda: agent.Cups
+        _signal.signal = lambda number, handler: installed.append(number)
+        agent.signal.signal = _signal.signal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            main_config = agent.Config(
+                server="https://nowhere.invalid", token="t",
+                work_dir=Path(tmp), poll_interval=1,
+            )
+            main_agent = agent.Agent(main_config)
+            main_agent.running = False          # install handlers, skip the loop
+            main_agent.api = type("Api", (), {
+                "config_call": lambda self: {"device": {}, "printers": []},
+            })()
+            main_agent.run()
+    finally:
+        _signal.signal = saved_signal
+        agent.signal.signal = saved_signal
+        agent.select_spooler = saved_spooler
+
+    check("SIGTERM and SIGINT are still handled on the main thread",
+          set(installed) == {_signal.SIGTERM, _signal.SIGINT}, f"got {installed}")
+
     # --- The installer script itself ---------------------------------------
     print("install.ps1 encoding")
 

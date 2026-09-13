@@ -55,8 +55,8 @@ if ($KeepConsole) { $windowFlag = '--console' }
 # as well costs nothing and survives someone editing that list out.
 $hidden = @(
     'argparse', 'dataclasses', 'hashlib', 'json', 'logging', 'os', 'pathlib',
-    'platform', 're', 'shutil', 'signal', 'subprocess', 'tempfile', 'time',
-    'typing', 'urllib.error', 'urllib.parse', 'urllib.request'
+    'platform', 're', 'shutil', 'signal', 'subprocess', 'tempfile', 'threading',
+    'time', 'typing', 'urllib.error', 'urllib.parse', 'urllib.request'
 )
 $hiddenArgs = @()
 foreach ($module in $hidden) { $hiddenArgs += @('--hidden-import', $module) }
