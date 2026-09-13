@@ -498,6 +498,355 @@ class Converter:
         return int(match.group(1)) if match else None
 
 
+# ---------------------------------------------------------------------------
+# Windows
+# ---------------------------------------------------------------------------
+
+class Windows:
+    """
+    The Windows print spooler, driven through PowerShell and SumatraPDF.
+
+    Windows has no CUPS and no built-in way to print a PDF from a script
+    without opening a window, so the work is split:
+
+      * PowerShell's PrintManagement module reports the queue's real state and
+        sets paper size, colour and duplex on the queue.
+      * SumatraPDF renders the PDF and submits it silently, carrying copies and
+        the page range.
+
+    The queue configuration is a property of the printer, not of one job, so it
+    is set immediately before each submission. The agent processes one job at a
+    time, which is what makes that safe.
+    """
+
+    #: Win32_Printer DetectedErrorState, mapped to the IPP-style reasons the
+    #: server already understands. Anything blocking here stops the printer
+    #: being offered to customers.
+    ERROR_STATES = {
+        3: "media-low",
+        4: "media-empty",
+        5: "toner-low",
+        6: "toner-empty",
+        7: "cover-open",
+        8: "media-jam",
+        9: "offline",
+        10: "service-requested",
+        11: "output-area-full",
+    }
+
+    @staticmethod
+    def available() -> bool:
+        return os.name == "nt" and Windows._powershell() is not None
+
+    @staticmethod
+    def _powershell() -> str | None:
+        return shutil.which("powershell") or shutil.which("pwsh")
+
+    @staticmethod
+    def sumatra() -> str | None:
+        """SumatraPDF, from PATH or the places the installer puts it."""
+        found = shutil.which("SumatraPDF") or shutil.which("SumatraPDF.exe")
+        if found:
+            return found
+        for candidate in (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "SumatraPDF" / "SumatraPDF.exe",
+            Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "SumatraPDF" / "SumatraPDF.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "SumatraPDF" / "SumatraPDF.exe",
+            Path(r"C:\kpms-agent\SumatraPDF.exe"),
+        ):
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    @classmethod
+    def _ps(cls, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
+        shell = cls._powershell()
+        return subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+
+    @staticmethod
+    def _quote(value: str) -> str:
+        """Single-quote a value for PowerShell, escaping embedded quotes."""
+        return "'" + value.replace("'", "''") + "'"
+
+    @classmethod
+    def printer_state(cls, queue: str) -> dict[str, Any]:
+        started = time.monotonic()
+        script = (
+            "$ErrorActionPreference='Stop';"
+            f"$p = Get-CimInstance Win32_Printer -Filter \"Name='{queue.replace(chr(39), chr(39) * 2)}'\";"
+            "if (-not $p) { Write-Output 'NOTFOUND'; exit 0 };"
+            "[pscustomobject]@{ status=$p.PrinterStatus; offline=$p.WorkOffline;"
+            " error=$p.DetectedErrorState; state=$p.PrinterState } | ConvertTo-Json -Compress"
+        )
+        result = cls._ps(script)
+        latency = int((time.monotonic() - started) * 1000)
+
+        if result.returncode != 0:
+            return {
+                "status": "unknown",
+                "message": (result.stderr or "PowerShell could not read the printer.").strip()[:400],
+                "state_reasons": [],
+                "latency_ms": latency,
+            }
+
+        if "NOTFOUND" in result.stdout:
+            return {
+                "status": "offline",
+                "message": f'Windows has no printer named "{queue}".',
+                "state_reasons": ["offline"],
+                "latency_ms": latency,
+            }
+
+        try:
+            data = json.loads(result.stdout.strip())
+        except (ValueError, TypeError):
+            return {
+                "status": "unknown",
+                "message": "Could not read the printer state from Windows.",
+                "state_reasons": [],
+                "latency_ms": latency,
+            }
+
+        reasons: list[str] = []
+        error_state = data.get("error")
+        if isinstance(error_state, int) and error_state in cls.ERROR_STATES:
+            reasons.append(cls.ERROR_STATES[error_state])
+        if data.get("offline"):
+            reasons.append("offline")
+
+        blocked = [r for r in reasons if r not in ("media-low", "toner-low")]
+        status = "offline" if blocked else "online"
+        message = (
+            "Ready." if status == "online"
+            else "The printer needs attention: " + ", ".join(blocked)
+        )
+
+        return {
+            "status": status,
+            "message": message,
+            "state_reasons": reasons,
+            "latency_ms": latency,
+        }
+
+    @classmethod
+    def capabilities(cls, queue: str) -> dict[str, Any] | None:
+        """
+        What the driver says this printer can do.
+
+        Reported as a probe, exactly like the CUPS path: the server still keeps
+        it separate from a physical test print, because a driver advertising
+        duplex is not proof that paper comes out printed on both sides.
+        """
+        script = (
+            "$ErrorActionPreference='Stop';"
+            f"$c = Get-PrintConfiguration -PrinterName {cls._quote(queue)};"
+            f"$caps = (Get-Printer -PrinterName {cls._quote(queue)} -Full).Capabilities;"
+            "[pscustomobject]@{ color=$c.Color; duplex=$c.DuplexingMode; paper=$c.PaperSize;"
+            " caps=$caps } | ConvertTo-Json -Compress -Depth 4"
+        )
+        result = cls._ps(script)
+        if result.returncode != 0:
+            return None
+
+        try:
+            data = json.loads(result.stdout.strip())
+        except (ValueError, TypeError):
+            return None
+
+        blob = json.dumps(data).lower()
+
+        sizes: list[str] = []
+        for name, aliases in (
+            ("A4", ("a4",)), ("A5", ("a5",)), ("A3", ("a3",)), ("B5", ("b5",)),
+            ("Letter", ("letter", "na_letter")), ("Legal", ("legal", "na_legal")),
+        ):
+            if any(alias in blob for alias in aliases):
+                sizes.append(name)
+
+        colour_capable = bool(data.get("color")) or "color" in blob
+        duplex_capable = "twosided" in blob or "duplex" in blob
+
+        return {
+            "paper_sizes": sizes,
+            "color_modes": ["bw"] + (["color"] if colour_capable else []),
+            "duplex_modes": ["single"] + (["double"] if duplex_capable else []),
+        }
+
+    @classmethod
+    def _configure(cls, queue: str, settings: dict[str, str]) -> str:
+        """Apply paper size, colour and duplex to the queue. Returns a note."""
+        parts = [f"Set-PrintConfiguration -PrinterName {cls._quote(queue)}"]
+        if "paper" in settings:
+            parts.append(f"-PaperSize {settings['paper']}")
+        if "color" in settings:
+            parts.append("-Color $" + ("true" if settings["color"] == "color" else "false"))
+        if "duplex" in settings:
+            parts.append(f"-DuplexingMode {settings['duplex']}")
+
+        if len(parts) == 1:
+            return ""
+
+        result = cls._ps(" ".join(parts))
+        if result.returncode != 0:
+            # Not fatal on its own: the job can still print on the queue's
+            # current settings, and saying so beats failing silently.
+            return "The printer would not accept these settings: " + (
+                (result.stderr or "").strip()[:200] or "unknown error"
+            )
+        return ""
+
+    @classmethod
+    def submit(cls, queue: str, path: Path, title: str, options: list[str]) -> tuple[bool, str, str | None]:
+        viewer = cls.sumatra()
+        if viewer is None:
+            return False, (
+                "SumatraPDF is not installed on this agent. Windows cannot print a PDF "
+                "from a script without it. Install it and try again."
+            ), None
+
+        queue_settings, print_settings, unsupported = translate_options(options)
+
+        note = cls._configure(queue, queue_settings)
+
+        # The document name is how the job is found in the spooler afterwards,
+        # so it carries the job number.
+        args = [viewer, "-print-to", queue, "-silent", "-exit-when-done"]
+        if print_settings:
+            args.extend(["-print-settings", ",".join(print_settings)])
+        args.append(str(path))
+
+        try:
+            result = subprocess.run(args, capture_output=True, text=True, timeout=300, check=False)
+        except subprocess.TimeoutExpired:
+            return False, "The printer did not accept the job within five minutes.", None
+
+        if result.returncode != 0:
+            return False, (
+                (result.stderr or result.stdout or "SumatraPDF could not print the file.").strip()[:400]
+            ), None
+
+        messages = [m for m in (note, unsupported) if m]
+        return True, " ".join(messages) or "Sent to the Windows print queue.", path.name
+
+    @classmethod
+    def job_finished(cls, job_id: str) -> tuple[bool, bool, str]:
+        """
+        job_id is the spooled document name. A job that is no longer listed has
+        left the spooler; one in an error state is reported as failed rather
+        than left to time out.
+        """
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "$jobs = Get-Printer | Get-PrintJob | Where-Object { $_.DocumentName -like "
+            f"{cls._quote('*' + job_id + '*')} }};"
+            "if (-not $jobs) { Write-Output 'GONE'; exit 0 };"
+            "($jobs | Select-Object -First 1).JobStatus"
+        )
+        result = cls._ps(script)
+
+        if result.returncode != 0:
+            return False, False, "Could not read the print queue."
+
+        output = result.stdout.strip()
+        if "GONE" in output or output == "":
+            return True, True, "The job has left the Windows print queue."
+
+        lowered = output.lower()
+        for bad in ("error", "deleted", "blocked", "offline", "paperout", "userintervention"):
+            if bad in lowered:
+                return True, False, f"Windows reported the job as {output.strip()}."
+
+        return False, False, f"Still in the queue ({output.strip()})."
+
+
+def translate_options(options: list[str]) -> tuple[dict[str, str], list[str], str]:
+    """
+    Turn the server's CUPS options into Windows queue settings and SumatraPDF
+    print settings.
+
+    Returns (queue_settings, print_settings, note). The note names anything
+    that could not be carried, so the agent reports it rather than quietly
+    printing something the customer did not ask for.
+    """
+    queue_settings: dict[str, str] = {}
+    print_settings: list[str] = []
+    dropped: list[str] = []
+
+    for option in options:
+        key, _, value = option.partition("=")
+        key = key.strip()
+        value = value.strip()
+
+        if key == "copies":
+            try:
+                count = max(1, int(value))
+            except ValueError:
+                count = 1
+            if count > 1:
+                print_settings.append(f"{count}x")
+
+        elif key == "media":
+            size = PWG_TO_SIZE.get(value)
+            if size:
+                queue_settings["paper"] = size
+                print_settings.append(f"paper={size}")
+            else:
+                dropped.append(f"paper size {value}")
+
+        elif key == "sides":
+            if value == "two-sided-long-edge":
+                queue_settings["duplex"] = "TwoSidedLongEdge"
+                print_settings.append("duplexlong")
+            elif value == "two-sided-short-edge":
+                queue_settings["duplex"] = "TwoSidedShortEdge"
+                print_settings.append("duplexshort")
+            else:
+                queue_settings["duplex"] = "OneSided"
+                print_settings.append("simplex")
+
+        elif key == "print-color-mode":
+            queue_settings["color"] = "color" if value == "color" else "monochrome"
+            print_settings.append("color" if value == "color" else "monochrome")
+
+        elif key == "page-ranges":
+            print_settings.append(value)
+
+        elif key in ("ColorModel", "orientation-requested"):
+            # ColorModel duplicates print-color-mode, which is already handled.
+            # Orientation is a PrintTicket property that Set-PrintConfiguration
+            # does not expose, so it is reported rather than assumed.
+            if key == "orientation-requested" and value == "4":
+                dropped.append("landscape orientation")
+
+        else:
+            dropped.append(option)
+
+    note = ""
+    if dropped:
+        note = "This agent could not apply: " + ", ".join(dropped) + "."
+
+    return queue_settings, print_settings, note
+
+
+def select_spooler() -> type | None:
+    """
+    Pick the printing backend for this machine.
+
+    Linux and macOS have CUPS; Windows does not, and needs an entirely
+    different set of tools. Which one is in use is decided once, at startup,
+    and logged — an agent that silently picked the wrong backend would report
+    printers as offline for reasons nobody could follow.
+    """
+    if Cups.available():
+        return Cups
+    if Windows.available():
+        return Windows
+    return None
+
+
 class Agent:
     def __init__(self, config: Config):
         self.config = config
@@ -506,6 +855,7 @@ class Agent:
         self.printers: list[dict[str, Any]] = []
         self.last_heartbeat = 0.0
         self.capabilities_reported: set[str] = set()
+        self.spooler: type = Cups
 
         config.work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -514,11 +864,19 @@ class Agent:
         self.running = False
 
     def run(self) -> int:
-        if not Cups.available():
-            log.error("CUPS tools not found. Install with: sudo apt install cups cups-client")
+        spooler = select_spooler()
+        if spooler is None:
+            if os.name == "nt":
+                log.error(
+                    "PowerShell was not found, so the Windows print spooler cannot be reached."
+                )
+            else:
+                log.error("CUPS tools not found. Install with: sudo apt install cups cups-client")
             return 2
+        self.spooler = spooler
 
         log.info("Krishna Printer agent %s starting", AGENT_VERSION)
+        log.info("Printing backend: %s", spooler.__name__)
         log.info("Server: %s", self.config.server)
 
         if not self.config.verify_tls:
@@ -599,7 +957,7 @@ class Agent:
                 continue
 
             queue = printer.get("queue_name") or printer.get("code")
-            state = Cups.printer_state(queue)
+            state = self.spooler.printer_state(queue)
             state["code"] = printer["code"]
             reports.append(state)
 
@@ -607,7 +965,7 @@ class Agent:
             # actually see — that is what turns a declared option into a
             # verified one the customer may be offered.
             if state["status"] in ("online", "error") and printer["code"] not in self.capabilities_reported:
-                capabilities = Cups.capabilities(queue)
+                capabilities = self.spooler.capabilities(queue)
                 if capabilities:
                     try:
                         self.api.report_capabilities(printer["code"], capabilities)
@@ -682,7 +1040,7 @@ class Agent:
                                  retryable=False)
                 return
 
-            accepted, message, cups_job = Cups.submit(
+            accepted, message, cups_job = self.spooler.submit(
                 queue, printable, f"{job_number} {document['name']}", options
             )
 
@@ -712,7 +1070,7 @@ class Agent:
 
         while time.monotonic() < deadline and self.running:
             time.sleep(3)
-            finished, successful, message = Cups.job_finished(cups_job)
+            finished, successful, message = self.spooler.job_finished(cups_job)
 
             if finished:
                 if successful:
@@ -805,6 +1163,16 @@ def main() -> int:
     agent = Agent(config)
 
     if args.test:
+        spooler = select_spooler()
+        if spooler is None:
+            log.error(
+                "No printing backend is available: neither the CUPS tools nor PowerShell "
+                "could be found."
+            )
+            return 2
+        agent.spooler = spooler
+        print(f"Printing backend: {spooler.__name__}")
+
         try:
             configuration = agent.api.config_call()
         except ApiError as error:
@@ -817,18 +1185,20 @@ def main() -> int:
 
         for printer in configuration.get("printers", []):
             queue = printer.get("queue_name") or printer["code"]
-            state = Cups.printer_state(queue)
+            state = spooler.printer_state(queue)
             print(f"  {printer['code']:<24} queue={queue:<24} {state['status']:<8} {state['message']}")
 
-            capabilities = Cups.capabilities(queue)
+            capabilities = spooler.capabilities(queue)
             if capabilities:
                 print(f"    paper: {', '.join(capabilities['paper_sizes'])}")
                 print(f"    colour: {', '.join(capabilities['color_modes'])}")
                 print(f"    sides: {', '.join(capabilities['duplex_modes'])}")
             else:
-                print("    capabilities: could not be read from CUPS")
+                print("    capabilities: could not be read from the printing backend")
 
         print(f"LibreOffice: {Converter.libreoffice() or 'NOT INSTALLED — Office files cannot be printed'}")
+        if spooler is Windows:
+            print(f"SumatraPDF:  {Windows.sumatra() or 'NOT INSTALLED — nothing can be printed'}")
         return 0
 
     return agent.run()

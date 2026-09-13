@@ -2346,6 +2346,71 @@ $runner->test('TA.5', 'An agent cannot claim another location\'s job', 'scoped t
 // Transport honesty — the RAW/9100 refusal
 // ═══════════════════════════════════════════════════════════════════════
 
+$runner->group('Agent job options');
+
+$runner->test('TG.1', 'The options sent to an agent carry the copies the customer paid for', 'copies=N is present', function () use ($basePath) {
+    App\Core\Config::load($basePath . '/config');
+
+    // Regression: copies were in the IPP attributes but not in the CUPS
+    // options, so a printer driven by a location agent produced one copy of a
+    // three-copy order. The job succeeded, so nothing looked wrong anywhere
+    // except at the counter.
+    $spec = new App\Services\Printer\PrintJobSpec(
+        jobNumber: 'AK100001',
+        copies: 3,
+        colorMode: 'bw',
+        paperSize: 'A4',
+        orientation: 'portrait',
+        duplex: 'single',
+        pageRange: 'all',
+        documentPages: 10,
+        documentName: 'order.pdf',
+        mimeType: 'application/pdf',
+    );
+
+    $options = $spec->toCupsOptions();
+    $ipp = $spec->toIppAttributes();
+
+    return TestRunner::assertTrue(
+        in_array('copies=3', $options, true) && ($ipp['copies'] ?? 0) === 3,
+        'Both transports carry 3 copies: ' . implode(' ', $options),
+        'cups=' . json_encode($options) . ' ipp copies=' . json_encode($ipp['copies'] ?? null)
+    );
+});
+
+$runner->test('TG.2', 'The Windows agent translates those options without losing any', 'every option carried or reported', function () use ($basePath) {
+    // The Windows print backend cannot be driven from here — there is no
+    // Windows spooler to talk to — so what is checked is everything that
+    // decides whether it behaves once it is there: the option translation, the
+    // printer-state mapping, and the safety of the PowerShell it builds.
+    $script = $basePath . '/tests/windows_agent_check.py';
+    if (!is_file($script)) {
+        return ['pass' => false, 'actual' => 'tests/windows_agent_check.py is missing.'];
+    }
+
+    $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open('python3 ' . escapeshellarg($script), $descriptors, $pipes);
+    if (!is_resource($process)) {
+        return ['pass' => false, 'actual' => 'Could not run python3.'];
+    }
+
+    $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $status = proc_close($process);
+
+    $summary = '';
+    if (preg_match('/^(\d+ passed, \d+ failed.*)$/m', $output, $m) === 1) {
+        $summary = trim($m[1]);
+    }
+
+    return TestRunner::assertTrue(
+        $status === 0,
+        $summary !== '' ? $summary : 'All Windows backend checks passed.',
+        $summary !== '' ? $summary : trim(substr($output, -300))
+    );
+});
+
 $runner->group('Transport limitations are enforced, not hidden');
 
 $runner->test('TL.1', 'RAW/9100 refuses a PDF for a printer with no interpreter', 'a permanent, explained failure', function () use ($basePath, $rawPort, $makePdf, $scratch) {

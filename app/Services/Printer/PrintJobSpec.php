@@ -78,6 +78,11 @@ final class PrintJobSpec
     {
         $sizes = (array) Config::get('printing.paper_sizes', []);
         $options = [
+            // Copies belong here as much as in the IPP attributes. Leaving them
+            // out meant an agent-driven printer produced a single copy of a job
+            // the customer had paid three copies for — the print succeeded, so
+            // nothing looked wrong anywhere except at the counter.
+            'copies=' . max(1, $this->copies),
             'media=' . ((string) ($sizes[$this->paperSize]['pwg'] ?? 'iso_a4_210x297mm')),
             'sides=' . ($this->duplex === 'double' ? 'two-sided-long-edge' : 'one-sided'),
             'print-color-mode=' . ($this->colorMode === 'color' ? 'color' : 'monochrome'),

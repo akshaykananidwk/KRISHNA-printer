@@ -157,7 +157,7 @@ final class ReportWriter
             9 => ['Colour printing', ['T9.1', 'T3.3']],
             10 => ['A4', ['T10.1', 'T17.3']],
             11 => ['Supported paper sizes', ['T11.1', 'T11.2']],
-            12 => ['Copies', ['T8.1', 'T12.1', 'T17.3']],
+            12 => ['Copies', ['T8.1', 'T12.1', 'T17.3', 'TG.1']],
             13 => ['Duplex', ['T13.1', 'T13.2', 'T13.3', 'T13.4']],
             14 => ['Price calculation', ['T14.1', 'T14.2', 'T14.3', 'T14.4']],
             15 => ['Payment success', ['T15.1', 'T15.2', 'T15.3']],

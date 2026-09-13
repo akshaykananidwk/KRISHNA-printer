@@ -67,6 +67,54 @@ a job.
 
 ---
 
+## 2b. Running the agent on Windows
+
+The agent also runs on a Windows 10/11 PC with the printer attached — useful
+when a shop already has a counter PC, and the only option when the printer is
+USB-only.
+
+Windows has no CUPS, so the agent uses a different backend there. It is chosen
+automatically at startup and named in the log:
+
+| | Linux / macOS | Windows |
+|---|---|---|
+| Printer state | `lpstat` | `Win32_Printer` via PowerShell |
+| Capabilities | `lpoptions` | `Get-PrintConfiguration` |
+| Paper, colour, duplex | `lp -o` | `Set-PrintConfiguration` on the queue |
+| Copies, page range | `lp -o` | SumatraPDF `-print-settings` |
+| Office → PDF | LibreOffice | LibreOffice |
+
+Install with `agent/install.ps1` in an Administrator PowerShell window. It
+registers a scheduled task that starts with Windows, rather than a service:
+printers are per-session on Windows, so a task running as the logged-on user
+sees exactly the printers that user sees.
+
+**SumatraPDF is required.** Windows cannot print a PDF from a script without
+something to render it; Sumatra is a single portable executable that does that
+and nothing else. Without it the agent refuses jobs with a clear message rather
+than pretending to print.
+
+### What the Windows backend cannot do
+
+**Orientation.** Paper size, colour and duplex are set through
+`Set-PrintConfiguration`, which has no orientation property. A landscape
+request is therefore reported back on the job — "This agent could not apply:
+landscape orientation" — rather than being quietly printed portrait. Portrait
+work is unaffected, and a document whose pages are already landscape prints
+landscape regardless.
+
+**Queue settings are per-printer, not per-job.** Windows applies paper, colour
+and duplex to the queue, so they are set immediately before each submission.
+The agent prints one job at a time, which is what makes that safe; do not point
+two agents at one Windows queue.
+
+**Not verified on real hardware from this repository.** The translation of job
+options, the state mapping and the generated PowerShell are covered by tests
+(`TG.2`), but no Windows spooler was available to print a page through. Run a
+test print before taking money for one.
+
+---
+
 ## 3. Direct transports
 
 For printers on a network the server itself can reach — an office LAN, a private

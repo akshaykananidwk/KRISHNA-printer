@@ -64,12 +64,16 @@ and locks itself when it finishes.
 This is the part that most matters, so it is stated plainly here and in full in
 **[docs/PRINTING.md](docs/PRINTING.md)**.
 
-Printers are **not** exposed to the internet. There is no port forwarding, no
-inbound firewall rule, and no permanent Windows machine at each shop. Instead
-each location runs a small **print agent** — a Python script on any Linux box
-already there (a Raspberry Pi is plenty) — which polls the server over outbound
-HTTPS, pulls jobs assigned to its own printers only, and hands them to CUPS on
-the local network.
+Printers are **not** exposed to the internet. There is no port forwarding and no
+inbound firewall rule. Instead each location runs a small **print agent** — a
+Python script that polls the server over outbound HTTPS, pulls only the jobs
+assigned to its own printers, and hands them to the printer on the local
+network.
+
+The agent runs on whatever the shop already has: **Linux** through CUPS (a
+Raspberry Pi is ample) or **Windows 10/11** through the print spooler. No
+Windows machine is *required* anywhere — but where one is already sitting on the
+counter, it can do the job.
 
 The server can also speak **IPP**, **RAW/9100** and **LPD/LPR** directly, for
 printers on a network the server can reach. Those drivers are honest about what
