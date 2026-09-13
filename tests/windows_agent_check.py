@@ -142,6 +142,43 @@ def main() -> int:
     check("an unreadable queue is unknown, never assumed online",
           broken["status"] == "unknown", f"got {broken}")
 
+    # --- Configuration file ------------------------------------------------
+    print("Configuration file")
+
+    # Windows PowerShell 5.1 writes UTF-8 *with* a byte-order mark, and on a
+    # machine whose default encoding is a code page those three bytes arrive as
+    # stray characters that make the file "invalid JSON at column 1". The
+    # installer no longer writes a BOM, and the agent no longer cares if
+    # something else does - a config edited in Notepad must still load.
+    import tempfile as _tempfile
+
+    sample = json.dumps({
+        "server": "https://nowhere.invalid", "token": "kpms_test",
+        "poll_interval": 10, "work_dir": _tempfile.mkdtemp(), "verify_tls": True,
+    })
+
+    for label, payload in (
+        ("with a BOM", b"\xef\xbb\xbf" + sample.encode("utf-8")),
+        ("without a BOM", sample.encode("utf-8")),
+    ):
+        path = Path(_tempfile.mkdtemp()) / "config.json"
+        path.write_bytes(payload)
+        probe = subprocess.run(
+            [sys.executable, str(AGENT), "--config", str(path), "--test"],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+        output = probe.stdout + probe.stderr
+        check(f"a config {label} is read",
+              "is not valid JSON" not in output,
+              output.strip()[:160])
+
+    # The installer must not write one in the first place.
+    installer_text = (AGENT.parent / "install.ps1").read_bytes().decode("ascii", "replace")
+    check("the installer writes the config without a BOM",
+          "UTF8Encoding $false" in installer_text
+          and "Set-Content -Path $configPath -Encoding UTF8" not in installer_text,
+          "install.ps1 still uses Set-Content -Encoding UTF8")
+
     # --- The installer script itself ---------------------------------------
     print("install.ps1 encoding")
 

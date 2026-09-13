@@ -1131,7 +1131,12 @@ def main() -> int:
     config_path = Path(args.config)
     if config_path.is_file():
         try:
-            settings = json.loads(config_path.read_text())
+            # utf-8-sig, not utf-8: Windows PowerShell and Notepad both write a
+            # byte-order mark, and on a machine whose default encoding is a
+            # code page that mark arrives as three stray characters that make
+            # the file "invalid JSON at column 1". Reading it this way strips a
+            # BOM when there is one and changes nothing when there is not.
+            settings = json.loads(config_path.read_text(encoding="utf-8-sig"))
         except json.JSONDecodeError as error:
             log.error("Config file %s is not valid JSON: %s", config_path, error)
             return 1

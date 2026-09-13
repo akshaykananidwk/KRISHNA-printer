@@ -134,7 +134,12 @@ $configPath = Join-Path $InstallDir 'config.json'
     poll_interval = $PollInterval
     work_dir      = (Join-Path $InstallDir 'work')
     verify_tls    = (-not $NoVerifyTls.IsPresent)
-} | ConvertTo-Json | Set-Content -Path $configPath -Encoding UTF8
+} | ConvertTo-Json | Set-Variable -Name configJson
+
+# Not Set-Content -Encoding UTF8: in Windows PowerShell 5.1 that writes a
+# byte-order mark, and a BOM at the start of a JSON file is three characters
+# that no JSON parser expects. Write real UTF-8 with no mark.
+[IO.File]::WriteAllText($configPath, $configJson, (New-Object System.Text.UTF8Encoding $false))
 
 $acl = Get-Acl $configPath
 $acl.SetAccessRuleProtection($true, $false)
