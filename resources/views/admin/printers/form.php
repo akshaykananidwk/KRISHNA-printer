@@ -142,7 +142,12 @@ $conn = static fn (string $key, string $default = ''): string =>
         <label class="a-field__label" for="queue_name">CUPS queue name</label>
         <input class="a-input a-mono" id="queue_name" name="queue_name" maxlength="120"
                value="<?= View::e($value('queue_name')) ?>" placeholder="Canon_GM4000_series">
-        <p class="a-field__hint">The queue name on the agent, as shown by <code>lpstat -p</code>.</p>
+        <p class="a-field__hint">
+          The printer's name on the agent machine, exactly as it appears there.
+          On Linux that is the CUPS queue from <code>lpstat -p</code>; on Windows
+          it is the printer name from <code>Get-Printer</code>, or Settings &rarr;
+          Printers &amp; scanners.
+        </p>
       </div>
 
       <div class="a-field">
