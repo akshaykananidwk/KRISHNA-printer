@@ -775,9 +775,24 @@ class Windows:
         if result.returncode != 0:
             # Log what was actually run: a rejected command line is impossible
             # to diagnose from the error text alone.
-            log.error("SumatraPDF rejected: %s", " ".join(args))
+            log.error("SumatraPDF exited %s running: %s", result.returncode, " ".join(args))
+
+            detail = (result.stderr or result.stdout or "").strip()[:300]
+            hint = ""
+            # SumatraPDF is a GUI application. Run from a task that is not in
+            # an interactive desktop session it fails with nothing useful to
+            # say, which looks exactly like this.
+            if not detail or "ParseFlags" in detail:
+                hint = (
+                    " SumatraPDF gave no reason. The usual cause is that it is not running in "
+                    "a desktop session: check that the KrishnaPrinterAgent scheduled task is set "
+                    "to run only when the user is logged on."
+                )
+
             return False, (
-                (result.stderr or result.stdout or "SumatraPDF could not print the file.").strip()[:400]
+                f"SumatraPDF exited with code {result.returncode}."
+                + (f" {detail}" if detail else "")
+                + hint
             ), None
 
         # A zero exit code is not proof that anything was queued. Wait until the

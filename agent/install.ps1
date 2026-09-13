@@ -181,8 +181,17 @@ $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries `
     -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 9999 `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 
+# The principal matters more than it looks. Without one, the task is registered
+# to run whether the user is logged on or not - which means session 0, with no
+# desktop. SumatraPDF is a GUI application and cannot print there: it reports
+# nothing useful and exits non-zero, so jobs fail with an error that says
+# nothing about the real cause. Interactive logon keeps the agent in the user's
+# own session, where the desktop and the printers both are.
+$taskPrincipal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+    -LogonType Interactive -RunLevel Highest
+
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Settings $settings -RunLevel Highest -Force | Out-Null
+    -Settings $settings -Principal $taskPrincipal -Force | Out-Null
 
 Start-ScheduledTask -TaskName $taskName
 Start-Sleep -Seconds 3
