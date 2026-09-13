@@ -232,4 +232,79 @@ final class SettingsController extends Controller
 
         return $this->back($request, 'success', 'Printing settings saved.');
     }
+
+    /**
+     * POST /admin/settings/agent-release
+     *
+     * Publish a release of the desktop software. Agents see it on their next
+     * connection and offer it to whoever is standing at that computer.
+     *
+     * The three fields are validated together and stored together, because two
+     * of them without the third is not a usable release — and the one that
+     * carries the weight is the checksum. The agent downloads what this URL
+     * serves and refuses to run it unless the hash matches. Handing an agent a
+     * URL with nothing to check it against would make this box a way to run
+     * any executable on every shop counter in the estate.
+     */
+    public function saveAgentRelease(Request $request): Response
+    {
+        $data = Validator::make($request->all(), [
+            'agent_release_version' => 'nullable|string|max:40',
+            'agent_release_url' => 'nullable|string|max:500',
+            'agent_release_sha256' => 'nullable|string|max:64',
+            'agent_release_notes' => 'nullable|string|max:2000',
+        ])->validated();
+
+        $version = trim((string) ($data['agent_release_version'] ?? ''));
+        $url = trim((string) ($data['agent_release_url'] ?? ''));
+        $sha256 = strtolower(trim((string) ($data['agent_release_sha256'] ?? '')));
+        $notes = trim((string) ($data['agent_release_notes'] ?? ''));
+
+        // Clearing all three withdraws the release: agents stop being offered
+        // anything and keep the version they have.
+        $clearing = $version === '' && $url === '' && $sha256 === '';
+
+        if (!$clearing) {
+            if ($version === '') {
+                return $this->back($request, 'error', 'Give the version number of the release.');
+            }
+            if (!str_starts_with($url, 'https://')) {
+                return $this->back($request, 'error',
+                    'The download address must start with https:// — agents will not fetch an '
+                    . 'executable over plain HTTP.');
+            }
+            if (preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+                return $this->back($request, 'error',
+                    'The SHA-256 must be 64 hexadecimal characters. On the machine that built the '
+                    . 'installer: Get-FileHash .\\dist\\KrishnaPrinterSetup.exe');
+            }
+        }
+
+        $admin = $request->attribute('admin');
+
+        $this->settings->setMany([
+            'agent_release_version' => ['value' => $version, 'type' => 'string', 'group' => 'printing'],
+            'agent_release_url' => ['value' => $url, 'type' => 'string', 'group' => 'printing'],
+            'agent_release_sha256' => ['value' => $sha256, 'type' => 'string', 'group' => 'printing'],
+            'agent_release_notes' => ['value' => $notes, 'type' => 'string', 'group' => 'printing'],
+        ], $admin?->id());
+
+        $this->audit->log(
+            'settings.agent_release',
+            $clearing
+                ? 'Withdrew the published desktop release.'
+                : sprintf('Published desktop release %s.', $version),
+            'settings',
+            null,
+            'notice'
+        );
+
+        return $this->back(
+            $request,
+            'success',
+            $clearing
+                ? 'Release withdrawn. Agents will keep the version they have.'
+                : sprintf('Release %s published. Agents will offer it on their next connection.', $version)
+        );
+    }
 }

@@ -180,6 +180,39 @@ def main() -> int:
     check("printing cannot be started before connecting",
           str(app.start_btn.cget("state")) == "disabled")
 
+    print("Updating from inside the window")
+
+    check("there is somewhere to start an update from",
+          hasattr(app, "update_btn") and hasattr(app, "check_btn"))
+    check("neither button works before connecting",
+          str(app.update_btn.cget("state")) == "disabled"
+          and str(app.check_btn.cget("state")) == "disabled",
+          "an update button that works without a server is a button with nothing behind it")
+
+    # Nothing published: say so, offer nothing.
+    app._show_release({"published": False})
+    check("with nothing published, no update is offered",
+          str(app.update_btn.cget("state")) == "disabled")
+    check("and the window says which version it has",
+          desktop.APP_VERSION in str(app.update_state.cget("text")))
+
+    # An older release must never be offered as an update.
+    app._show_release({"published": True, "version": "0.0.1", "url": "https://x/y.exe",
+                       "sha256": "a" * 64})
+    check("an older release is not offered",
+          str(app.update_btn.cget("state")) == "disabled",
+          "offering a downgrade and calling it an update")
+
+    # A newer one is, with whatever the operator wrote about it.
+    app._show_release({"published": True, "version": "9.9.9", "url": "https://x/y.exe",
+                       "sha256": "a" * 64, "notes": "Runs in the notification area."})
+    offered = str(app.update_state.cget("text"))
+    check("a newer release is offered", str(app.update_btn.cget("state")) == "normal")
+    check("with the version and the notes",
+          "9.9.9" in offered and "notification area" in offered, f"got {offered!r}")
+
+    app._show_release({"published": False})
+
     print("Packaging for Windows")
 
     # None of this can be run here - there is no Windows - so what is checked

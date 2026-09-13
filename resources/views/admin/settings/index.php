@@ -259,4 +259,57 @@ $on = static fn (string $key, bool $default = false): bool =>
   </form>
 </section>
 
+<section class="a-card">
+  <h2 class="a-card__title">Desktop software release</h2>
+  <p class="a-small" style="color:var(--ink-faint)">
+    Publish a version here and every shop's software offers it the next time it connects — they
+    press one button and it updates itself. Leave all three blank to withdraw a release; agents
+    then keep the version they already have.
+  </p>
+
+  <div class="a-alert a-alert--info a-small">
+    <strong>The checksum is not optional.</strong>
+    Agents download what the address serves and refuse to run it unless its SHA-256 matches what
+    you put here. Without that, this box would be a way to run any executable on every shop
+    counter you have. On the machine that built the installer:
+    <code>Get-FileHash .\dist\KrishnaPrinterSetup.exe</code>
+  </div>
+
+  <form method="post" action="/admin/settings/agent-release">
+    <?= Csrf::field() ?>
+    <div class="a-form-grid">
+      <div class="a-field">
+        <label class="a-field__label" for="agent_release_version">Version</label>
+        <input class="a-input" id="agent_release_version" name="agent_release_version" type="text"
+               maxlength="40" placeholder="1.1.0" value="<?= View::e($s('agent_release_version')) ?>">
+        <p class="a-field__hint">Must be higher than the version shops are running, or nothing is offered.</p>
+      </div>
+      <div class="a-field">
+        <label class="a-field__label" for="agent_release_sha256">SHA-256 of the installer</label>
+        <input class="a-input" id="agent_release_sha256" name="agent_release_sha256" type="text"
+               maxlength="64" spellcheck="false"
+               placeholder="64 hexadecimal characters"
+               value="<?= View::e($s('agent_release_sha256')) ?>">
+      </div>
+    </div>
+
+    <div class="a-field">
+      <label class="a-field__label" for="agent_release_url">Download address (https only)</label>
+      <input class="a-input" id="agent_release_url" name="agent_release_url" type="url"
+             maxlength="500" spellcheck="false"
+             placeholder="https://example.com/KrishnaPrinterSetup.exe"
+             value="<?= View::e($s('agent_release_url')) ?>">
+    </div>
+
+    <div class="a-field">
+      <label class="a-field__label" for="agent_release_notes">What changed</label>
+      <textarea class="a-input" id="agent_release_notes" name="agent_release_notes" rows="3"
+                maxlength="2000"
+                placeholder="Shown to the shop before they update."><?= View::e($s('agent_release_notes')) ?></textarea>
+    </div>
+
+    <button type="submit" class="a-btn a-btn--primary">Publish release</button>
+  </form>
+</section>
+
 <?php $view->end(); ?>

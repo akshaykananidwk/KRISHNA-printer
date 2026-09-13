@@ -55,16 +55,43 @@ operator was doing, several times a minute, all day.
 python3 agent/desktop/kpms_desktop.py
 ```
 
-**As an executable**, built on Windows:
+**As an executable**, built on Windows — double-click `build.bat`.
+
+It finds or installs Python (no Administrator needed), installs PyInstaller and
+Inno Setup, and writes two files into `dist`:
+
+| | |
+|---|---|
+| `KrishnaPrinter.exe` | One file. No Python needed on the machine that runs it. |
+| `KrishnaPrinterSetup.exe` | The Next-Next-Install wizard to hand to a shop. |
+
+`build.ps1` does the actual build and owns the list of modules the packager has
+to be told about; `build.bat` only gets the prerequisites in place first. Run
+`build.ps1` directly if you already have everything.
+
+## Updating a shop's software
+
+Build a new `KrishnaPrinterSetup.exe`, put it somewhere reachable over HTTPS,
+and publish it in the admin panel under **Settings → Desktop software release**:
+the version, the address, and the installer's SHA-256 —
 
 ```powershell
-cd agent\desktop
-.\build.ps1
+Get-FileHash .\dist\KrishnaPrinterSetup.exe
 ```
 
-That writes `dist\KrishnaPrinter.exe` — one file, no Python needed on the
-machine that runs it. PyInstaller is used at build time only; nothing it pulls
-in becomes a runtime dependency.
+Every shop's window then shows "Version X is available" the next time it
+connects, with whatever you wrote about it. They press **Install update** and
+it does the rest: download, verify, install silently, restart.
+
+The checksum is not decoration. The application hands the agent an address a
+human typed into a settings box; the agent downloads what is there and
+**refuses to run it unless the hash matches**, discarding it otherwise. Without
+that, the settings box would be a way to run any executable on every shop
+counter in the estate. Publishing a release without a valid checksum, or over
+plain HTTP, is refused at save time.
+
+Clearing all three fields withdraws the release — shops keep the version they
+have.
 
 ## What it still needs on the printing machine
 

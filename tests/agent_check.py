@@ -24,6 +24,8 @@ Exits 0 when every check passes, 1 otherwise.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import importlib.util
 import json
 import shutil
@@ -412,6 +414,130 @@ def main() -> int:
     check("its capabilities are re-reported if it returns",
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
+
+    # --- Updating itself ---------------------------------------------------
+    print("Updating the software")
+
+    import http.server
+    import threading as _threading
+
+    # "1.10.0" is newer than "1.9.0" and sorts before it as text. Comparing
+    # versions as strings would have offered people a downgrade and called it
+    # an update.
+    check("a higher version is offered", agent.is_newer("1.10.0", "1.9.0"))
+    check("a lower one is not", not agent.is_newer("1.9.0", "1.10.0"))
+    check("the same one is not", not agent.is_newer("1.0.0", "1.0.0"))
+    check("a missing version is not", not agent.is_newer("", "1.0.0"))
+    check("shorter and longer versions still compare",
+          agent.is_newer("2.0", "1.99.99") and not agent.is_newer("1.0", "1.0.1"))
+
+    # The download is trusted for its hash, not its address: an operator typed
+    # that address into a settings box.
+    payload = b"MZ this stands in for an installer" * 64
+    good_hash = hashlib.sha256(payload).hexdigest()
+
+    class Serve(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Serve)
+    port = server.server_address[1]
+    _threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        config = agent.Config(server=f"http://127.0.0.1:{port}", token="t", work_dir=work)
+        api = agent.Api(config)
+
+        # Plain HTTP is refused before a byte moves, whatever the hash says.
+        target = work / "setup.exe"
+        try:
+            api.fetch(f"http://127.0.0.1:{port}/setup.exe", target, good_hash)
+            http_refused = False
+            http_reason = "it downloaded over plain HTTP"
+        except agent.ApiError as error:
+            http_refused = True
+            http_reason = str(error)
+        check("an update is never fetched over plain HTTP", http_refused, http_reason)
+        check("and nothing is left behind when it is refused", not target.exists())
+
+        # The checksum itself. fetch() insists on https and there is no
+        # certificate here, so the transport is stubbed and the digest, the
+        # comparison and the rename are exercised for real.
+        class FakeResponse:
+            def __init__(self, body: bytes) -> None:
+                self.body = body
+                self.offset = 0
+
+            def read(self, size: int = -1) -> bytes:
+                if size < 0:
+                    size = len(self.body) - self.offset
+                chunk = self.body[self.offset:self.offset + size]
+                self.offset += len(chunk)
+                return chunk
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        saved_urlopen = agent.urllib.request.urlopen
+        agent.urllib.request.urlopen = lambda request, **kwargs: FakeResponse(payload)
+        try:
+            # The right hash: the file arrives, under its final name.
+            right = work / "right.exe"
+            api.fetch("https://example.test/setup.exe", right, good_hash)
+            landed = right.is_file() and right.read_bytes() == payload
+
+            # The wrong hash: nothing may be left anywhere that could be run
+            # later - not under the final name, not as a partial download.
+            wrong = work / "wrong.exe"
+            try:
+                api.fetch("https://example.test/setup.exe", wrong, "0" * 64)
+                mismatch = "it accepted a file whose hash did not match"
+            except agent.ApiError as error:
+                mismatch = str(error)
+            leftovers = sorted(f.name for f in work.iterdir() if f.name.startswith("wrong"))
+        finally:
+            agent.urllib.request.urlopen = saved_urlopen
+
+        check("a download whose hash matches is kept", landed)
+        check("one whose hash does not match is refused",
+              "not what the server said" in mismatch, mismatch)
+        check("and leaves nothing behind, not even a partial file",
+              leftovers == [], f"found {leftovers}")
+
+        # A checksum that is not a checksum is refused before any request.
+        malformed = work / "malformed.exe"
+        try:
+            api.fetch("https://example.invalid/x.exe", malformed, "not-a-hash")
+            bad_sum_refused = False
+        except agent.ApiError:
+            bad_sum_refused = True
+        check("a malformed checksum is refused outright", bad_sum_refused)
+        check("and that refusal makes no request either", not malformed.exists())
+
+    server.shutdown()
+
+    # The installer must be started detached: it closes this application as its
+    # first act, so waiting for it would be waiting for something waiting on us.
+    source = AGENT.read_text()
+    spawn = source[source.index("def spawn_detached"):source.index("def version_tuple")]
+    # Code only: the docstring explains why subprocess.run is wrong here, and
+    # scanning the whole block matched that explanation rather than a call.
+    spawn_code = re.sub(r'"""[\s\S]*?"""', "", spawn)
+    check("the updater starts the installer without waiting for it",
+          "subprocess.Popen(" in spawn_code and "subprocess.run(" not in spawn_code,
+          "subprocess.run would deadlock against an installer that closes this app")
+    check("and detached, so it outlives the executable it replaces",
+          "DETACHED_PROCESS" in spawn and "start_new_session" in spawn)
 
     # --- No window flashes on the counter PC -------------------------------
     print("Windows console suppression")

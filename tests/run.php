@@ -2790,6 +2790,108 @@ $runner->test('TH.2', 'A failed admin save stays in the admin panel', 'the reaso
     );
 });
 
+$runner->test('TU.1', 'A release is only published when it can be verified', 'version, https and a checksum, or nothing', function () use ($connectDb, $adminClient) {
+    $db = $connectDb();
+    $read = static fn (): array => [
+        'version' => (string) $db->scalar("SELECT setting_value FROM system_settings WHERE setting_key = 'agent_release_version'"),
+        'url' => (string) $db->scalar("SELECT setting_value FROM system_settings WHERE setting_key = 'agent_release_url'"),
+        'sha' => (string) $db->scalar("SELECT setting_value FROM system_settings WHERE setting_key = 'agent_release_sha256'"),
+    ];
+
+    $digest = hash('sha256', 'pretend installer');
+
+    // Plain HTTP: refused. The agent downloads an executable from this address.
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/agent-release', [
+        'agent_release_version' => '9.9.9',
+        'agent_release_url' => 'http://example.com/Setup.exe',
+        'agent_release_sha256' => $digest,
+    ]);
+    $afterHttp = $read();
+
+    // No checksum: refused. A URL with nothing to check it against would make
+    // this box a way to run any executable on every counter in the estate.
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/agent-release', [
+        'agent_release_version' => '9.9.9',
+        'agent_release_url' => 'https://example.com/Setup.exe',
+        'agent_release_sha256' => 'not-a-real-hash',
+    ]);
+    $afterNoSum = $read();
+
+    // All three, properly: accepted.
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/agent-release', [
+        'agent_release_version' => '9.9.9',
+        'agent_release_url' => 'https://example.com/Setup.exe',
+        'agent_release_sha256' => $digest,
+        'agent_release_notes' => 'Runs in the notification area.',
+    ]);
+    $afterGood = $read();
+
+    return TestRunner::assertTrue(
+        $afterHttp['url'] === '' && $afterNoSum['sha'] === ''
+            && $afterGood['version'] === '9.9.9' && $afterGood['sha'] === $digest,
+        'A plain-HTTP address and a malformed checksum were both refused; the complete release was '
+        . 'stored.',
+        sprintf('http=%s nosum=%s good=%s',
+            json_encode($afterHttp), json_encode($afterNoSum), json_encode($afterGood))
+    );
+});
+
+$runner->test('TU.2', 'Agents are told about the release, and never about half of one', 'all three fields or published=false', function () use ($baseUrl, $connectDb, $adminClient) {
+    $db = $connectDb();
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+
+    $adminClient->get('/admin/devices');
+    $page = $adminClient->submitForm('/admin/devices', [
+        'name' => 'Update Test Agent',
+        'location_id' => (string) $locationId,
+        'poll_interval_secs' => '10',
+    ]);
+    if (preg_match('#id="agentToken">([^<]+)<#', $page['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'No agent token was issued.'];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+
+    $call = static function (string $path) use ($baseUrl, $token): array {
+        $curl = curl_init($baseUrl . $path);
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
+        ]);
+        $body = (string) curl_exec($curl);
+        curl_close($curl);
+        return json_decode($body, true) ?: [];
+    };
+
+    // TU.1 left a complete release published.
+    $viaUpdate = $call('/api/agent/update')['update'] ?? [];
+    $viaConfig = $call('/api/agent/config')['update'] ?? [];
+
+    // Now break it behind the API's back, the way a half-finished edit would,
+    // and check nothing is offered rather than something unverifiable.
+    $db->execute("UPDATE system_settings SET setting_value = '' WHERE setting_key = 'agent_release_sha256'");
+    $broken = $call('/api/agent/update')['update'] ?? [];
+    $db->execute(
+        "UPDATE system_settings SET setting_value = ? WHERE setting_key = 'agent_release_sha256'",
+        [hash('sha256', 'pretend installer')]
+    );
+
+    return TestRunner::assertTrue(
+        ($viaUpdate['published'] ?? false) === true
+            && ($viaUpdate['version'] ?? '') === '9.9.9'
+            && ($viaUpdate['sha256'] ?? '') !== ''
+            && ($viaConfig['published'] ?? false) === true
+            && ($broken['published'] ?? true) === false
+            && !isset($broken['url']),
+        'The agent is told the version, the address and the checksum together, on both the update '
+        . 'call and the ordinary config call; with the checksum missing it is told nothing at all.',
+        sprintf('update=%s config=%s broken=%s',
+            json_encode($viaUpdate), json_encode($viaConfig), json_encode($broken))
+    );
+});
+
 $runner->test('TH.1', 'The front page explains the product to someone with no account', 'readable signed out, and honest', function () use ($baseUrl) {
     $visitor = new HttpClient($baseUrl);
     $page = $visitor->get('/');

@@ -589,6 +589,7 @@ class DesktopApp:
         self.agent_thread: threading.Thread | None = None
         self.agent_instance = None
 
+        self.release: dict[str, Any] = {}
         self.tray: TrayIcon | None = None
         self.hidden = False
         self.explained_tray = False
@@ -873,6 +874,23 @@ class DesktopApp:
             self.autostart_message.configure(
                 text="On Linux the installer registers a systemd service instead.")
 
+        updates = self._card(tab)
+        ttk.Label(updates, text="Updates", font=self.head_font, style="Card.TLabel").pack(anchor="w")
+        self.update_state = ttk.Label(
+            updates, style="Muted.TLabel", wraplength=760, justify="left",
+            text=f"This computer has version {APP_VERSION}. Connect to see whether a newer one "
+                 f"has been published.")
+        self.update_state.pack(anchor="w", pady=(4, 12))
+
+        update_row = ttk.Frame(updates, style="Card.TFrame")
+        update_row.pack(fill="x")
+        self.update_btn = ttk.Button(update_row, text="Install update", style="Accent.TButton",
+                                     command=self.install_update, state="disabled")
+        self.update_btn.pack(side="left")
+        self.check_btn = ttk.Button(update_row, text="Check for updates",
+                                    command=self.check_for_update, state="disabled")
+        self.check_btn.pack(side="left", padx=8)
+
     def _toggle_autostart(self) -> None:
         wanted = bool(self.autostart_var.get())
         problem = set_autostart(wanted)
@@ -1091,6 +1109,10 @@ class DesktopApp:
         )
         self._set_status(f"Connected \u00b7 {name}", OK)
         self.start_btn.configure(state="normal")
+        self.check_btn.configure(state="normal")
+        # The config call carries the published release, so a connected window
+        # already knows whether there is one without asking a second time.
+        self._show_release(configuration.get("update") or {})
 
         # The server's own list, which already contains the generic fallback -
         # prepending one here listed it twice.
@@ -1253,6 +1275,125 @@ class DesktopApp:
         self.stop_btn.configure(state="disabled")
         self.start_btn.configure(state="normal")
         self._set_status("Stopped", MUTED)
+
+    # -- updates -----------------------------------------------------------
+
+    def _show_release(self, release: dict[str, Any]) -> None:
+        """Say what is available, and enable the button only if it really is."""
+        self.release = release if isinstance(release, dict) else {}
+        module = self.agent_module
+
+        if not self.release.get("published"):
+            self.update_state.configure(
+                text=f"This computer has version {APP_VERSION}. Nothing newer has been published.",
+                foreground=MUTED)
+            self.update_btn.configure(state="disabled")
+            return
+
+        version = str(self.release.get("version", ""))
+        if not module.is_newer(version, APP_VERSION):
+            self.update_state.configure(
+                text=f"Version {APP_VERSION} — up to date.", foreground=OK)
+            self.update_btn.configure(state="disabled")
+            return
+
+        notes = str(self.release.get("notes", "")).strip()
+        self.update_state.configure(
+            text=f"Version {version} is available. You have {APP_VERSION}."
+                 + (f"\n\n{notes}" if notes else ""),
+            foreground=INK)
+        self.update_btn.configure(state="normal")
+
+    def check_for_update(self) -> None:
+        if self.api is None:
+            return
+        self.check_btn.configure(state="disabled")
+        self.update_state.configure(text="Asking the server…", foreground=MUTED)
+
+        api = self.api
+
+        def work():
+            return api.release()
+
+        def done(result, error):
+            self.check_btn.configure(state="normal")
+            if error is not None:
+                self.update_state.configure(
+                    text=f"Could not check for updates: {error}", foreground=DANGER)
+                return
+            self._show_release(result)
+
+        self._in_background(work, done)
+
+    def install_update(self) -> None:
+        """
+        Download the release, check it, and hand it to the installer.
+
+        The download is refused unless it hashes to what the server said, and
+        the installer is run silently — an update nobody asked to watch should
+        not put a wizard over the counter. The app then closes, because Windows
+        cannot replace a running executable, and the installer brings it back.
+        """
+        if self.api is None or not self.release.get("published"):
+            return
+
+        version = str(self.release.get("version", ""))
+        if not messagebox.askokcancel(
+            APP_NAME,
+            f"Update to version {version}?\n\n"
+            "Printing stops for about a minute while it installs, and this window closes and "
+            "comes back on its own. Do not do this in the middle of a busy counter.",
+        ):
+            return
+
+        self.update_btn.configure(state="disabled")
+        self.check_btn.configure(state="disabled")
+        self.update_state.configure(text=f"Downloading version {version}…", foreground=INK)
+
+        api = self.api
+        release = dict(self.release)
+        target = Path(self.settings.get("work_dir", str(Path.home()))) / "KrishnaPrinterSetup.exe"
+
+        def work():
+            api.fetch(str(release["url"]), target, str(release["sha256"]))
+            return target
+
+        def done(result, error):
+            if error is not None:
+                self.update_btn.configure(state="normal")
+                self.check_btn.configure(state="normal")
+                self.update_state.configure(
+                    text=f"The update was not installed: {error}", foreground=DANGER)
+                return
+            self._launch_installer(result, version)
+
+        self._in_background(work, done)
+
+    def _launch_installer(self, installer: Path, version: str) -> None:
+        self.update_state.configure(
+            text=f"Installing version {version}. This window will close and come back.",
+            foreground=INK)
+
+        if self.agent_instance is not None:
+            self.agent_instance.stop()
+
+        try:
+            # Detached, so it outlives the process it is about to replace. The
+            # Inno switches: silent, no restart prompt, and close the running
+            # copy - Windows will not overwrite an executable that is open.
+            self.agent_module.spawn_detached(
+                [str(installer), "/SILENT", "/NORESTART", "/CLOSEAPPLICATIONS"]
+            )
+        except Exception as error:                          # noqa: BLE001
+            self.update_btn.configure(state="normal")
+            self.check_btn.configure(state="normal")
+            self.update_state.configure(
+                text=f"The installer would not start: {error}\n"
+                     f"You can run it yourself: {installer}",
+                foreground=DANGER)
+            return
+
+        self.root.after(1500, self.quit_app)
 
     def on_close(self) -> None:
         """

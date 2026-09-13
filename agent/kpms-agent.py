@@ -112,6 +112,54 @@ def hidden_startupinfo():
     return info
 
 
+def spawn_detached(args) -> None:
+    """
+    Start a program and do not wait for it.
+
+    For the updater, and only the updater. subprocess.run waits, and the first
+    thing this installer does is close the application that started it — so
+    waiting for it means waiting for something that is waiting for you. It also
+    has to outlive this process, which is about to be replaced on disk.
+    """
+    options: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        DETACHED_PROCESS = 0x00000008
+        options["creationflags"] = DETACHED_PROCESS | CREATE_NO_WINDOW
+        options["startupinfo"] = hidden_startupinfo()
+    else:
+        options["start_new_session"] = True
+
+    subprocess.Popen(args, **options)
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    """
+    A version as numbers, for comparing. Anything unparseable sorts lowest.
+
+    Deliberately not a string comparison: "1.10.0" is newer than "1.9.0" and
+    sorts before it as text, which would have offered people a downgrade and
+    called it an update.
+    """
+    parts: list[int] = []
+    for piece in re.split(r"[.\-+_]", value.strip()):
+        match = re.match(r"^(\d+)", piece)
+        if match is None:
+            break
+        parts.append(int(match.group(1)))
+    return tuple(parts) if parts else (0,)
+
+
+def is_newer(candidate: str, current: str) -> bool:
+    """Whether `candidate` is a version worth offering to someone on `current`."""
+    if not candidate.strip():
+        return False
+    return version_tuple(candidate) > version_tuple(current)
+
+
 def run_quiet(args, **kwargs) -> subprocess.CompletedProcess:
     """
     subprocess.run that never flashes a window.
@@ -210,6 +258,64 @@ class Api:
 
     def config_call(self) -> dict[str, Any]:
         return self._request("GET", "/api/agent/config")
+
+    def release(self) -> dict[str, Any]:
+        """What the server says the current release of the software is."""
+        response = self._request("GET", "/api/agent/update")
+        return dict(response.get("update") or {})
+
+    def fetch(self, url: str, target: Path, expected_sha256: str) -> None:
+        """
+        Download a release and refuse it unless it is byte-for-byte what the
+        server said it would be.
+
+        The checksum is the whole security of this. The application names a URL
+        it does not necessarily control — an operator typed it into a settings
+        box — so what comes back is not trusted for being at that address. It is
+        trusted for hashing to the value the authenticated API returned, and
+        nothing that fails that check is left on disk to be run by accident.
+        """
+        expected = expected_sha256.strip().lower()
+        if len(expected) != 64 or any(c not in "0123456789abcdef" for c in expected):
+            raise ApiError("The server did not give a usable checksum for the update.", retryable=False)
+
+        if not url.startswith("https://"):
+            raise ApiError("An update will only be downloaded over HTTPS.", retryable=False)
+
+        request = urllib.request.Request(url, headers={
+            "User-Agent": f"KrishnaPrinterAgent/{AGENT_VERSION}",
+        })
+
+        digest = hashlib.sha256()
+        # Written beside the target, then renamed, so a failed or interrupted
+        # download never leaves something at the path an installer is run from.
+        partial = target.with_suffix(target.suffix + ".part")
+        try:
+            with urllib.request.urlopen(request, timeout=max(self.config.timeout, 300)) as response:
+                with partial.open("wb") as handle:
+                    while True:
+                        chunk = response.read(1024 * 256)
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        handle.write(chunk)
+        except urllib.error.HTTPError as error:
+            partial.unlink(missing_ok=True)
+            raise ApiError(f"The download failed: HTTP {error.code}") from error
+        except urllib.error.URLError as error:
+            partial.unlink(missing_ok=True)
+            raise ApiError(f"The download could not be reached: {error.reason}") from error
+
+        actual = digest.hexdigest()
+        if actual != expected:
+            partial.unlink(missing_ok=True)
+            raise ApiError(
+                "The downloaded file is not what the server said it would be, so it has been "
+                f"discarded. Expected {expected[:16]}…, got {actual[:16]}….",
+                retryable=False,
+            )
+
+        partial.replace(target)
 
     def heartbeat(self, printers: list[dict[str, Any]]) -> dict[str, Any]:
         return self._request("POST", "/api/agent/heartbeat", {

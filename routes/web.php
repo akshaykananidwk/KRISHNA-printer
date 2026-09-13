@@ -229,6 +229,7 @@ $router->group([
             $router->post('/settings/payment', Admin\SettingsController::class . '@savePayment');
             $router->post('/settings/payment/test', Admin\SettingsController::class . '@testPayment');
             $router->post('/settings/printing', Admin\SettingsController::class . '@savePrinting');
+            $router->post('/settings/agent-release', Admin\SettingsController::class . '@saveAgentRelease');
         });
 
         // --- System, updates and backups ---------------------------------
@@ -273,6 +274,7 @@ $router->group(['prefix' => '/api/agent', 'middleware' => ['install_guard', 'htt
     $router->post('/capabilities', Api\AgentController::class . '@reportCapabilities');
     $router->post('/printers', Api\AgentController::class . '@registerPrinter');
     $router->get('/profiles', Api\AgentController::class . '@profiles');
+    $router->get('/update', Api\AgentController::class . '@update');
 });
 
 // ---------------------------------------------------------------------

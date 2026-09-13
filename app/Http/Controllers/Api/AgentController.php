@@ -707,7 +707,60 @@ final class AgentController extends Controller
                 'enabled' => (bool) (int) $p['is_enabled'],
             ], $printers),
             'server_time' => gmdate('c'),
+            // Carried on every config call so the window knows about a release
+            // without asking separately. It is only ever advice: nothing is
+            // downloaded or installed unless somebody presses the button.
+            'update' => $this->releaseInfo(),
         ]);
+    }
+
+    /**
+     * GET /api/agent/update
+     *
+     * What the current release of the desktop software is. The agent asks, and
+     * decides for itself whether to offer it.
+     */
+    public function update(Request $request): Response
+    {
+        return $this->json(['success' => true, 'update' => $this->releaseInfo()]);
+    }
+
+    /**
+     * The release an operator published in Settings.
+     *
+     * The checksum is the part that matters. The application hands the agent a
+     * URL and a hash; the agent refuses to run anything whose hash does not
+     * match. Without that, "update yourself from this address" is a remote
+     * code execution waiting for whoever controls the address — and the
+     * address is typed into a settings box by a human, which is not a level of
+     * care to rest an executable on.
+     *
+     * @return array<string,mixed>
+     */
+    private function releaseInfo(): array
+    {
+        $version = trim((string) Config::get('settings.agent_release_version', ''));
+        $url = trim((string) Config::get('settings.agent_release_url', ''));
+        $sha256 = strtolower(trim((string) Config::get('settings.agent_release_sha256', '')));
+
+        // A release is only published when all three are present and the
+        // download is over HTTPS. Anything less is not offered at all, which
+        // leaves the agent running the version it already has.
+        $published = $version !== ''
+            && str_starts_with($url, 'https://')
+            && preg_match('/^[a-f0-9]{64}$/', $sha256) === 1;
+
+        if (!$published) {
+            return ['published' => false];
+        }
+
+        return [
+            'published' => true,
+            'version' => $version,
+            'url' => $url,
+            'sha256' => $sha256,
+            'notes' => (string) Config::get('settings.agent_release_notes', ''),
+        ];
     }
 
     private function extendLease(int $jobId): void

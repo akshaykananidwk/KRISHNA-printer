@@ -53,6 +53,9 @@ one it replaces stops working immediately.
   Excel or PDF.
 - One-click update from GitHub, with a snapshot taken first and automatic
   rollback if anything fails.
+- Publish a desktop release: every shop's software offers it on their next
+  connection and updates itself, refusing anything whose checksum does not
+  match what you published.
 
 ---
 
