@@ -1,5 +1,5 @@
-<#
-    Krishna Printer — location agent installer for Windows.
+﻿<#
+    Krishna Printer - location agent installer for Windows.
 
     Installs the agent as a scheduled task that starts with Windows, on a PC
     that has the printer attached (USB or network). Nothing is exposed to the
@@ -11,8 +11,8 @@
 
     Requirements it checks for, and installs where it can:
       * Python 3.8 or newer
-      * SumatraPDF  — Windows cannot print a PDF from a script without it
-      * LibreOffice — only if you want Word/Excel/PowerPoint files to print
+      * SumatraPDF  - Windows cannot print a PDF from a script without it
+      * LibreOffice - only if you want Word/Excel/PowerPoint files to print
 #>
 
 [CmdletBinding()]
@@ -36,24 +36,24 @@ function Fail($m) { Write-Host $m -ForegroundColor Red; exit 1 }
 $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Fail "Run this in an Administrator PowerShell window (right-click → Run as administrator)."
+    Fail "Run this in an Administrator PowerShell window (right-click -> Run as administrator)."
 }
 
 if ($Server -notmatch '^https://' -and $Server -notmatch '^http://localhost') {
-    Fail "The server address must start with https:// — the agent carries a token and customer documents."
+    Fail "The server address must start with https:// - the agent carries a token and customer documents."
 }
 $Server = $Server.TrimEnd('/')
 
 Info "Installing the Krishna Printer agent into $InstallDir"
 
 # --- Python --------------------------------------------------------------
-# Written for Windows PowerShell 5.1, which is what Windows 10 ships — so no
+# Written for Windows PowerShell 5.1, which is what Windows 10 ships - so no
 # null-coalescing or ternary operators anywhere in this script.
 $python = Get-Command python.exe -ErrorAction SilentlyContinue
 if (-not $python) { $python = Get-Command python3.exe -ErrorAction SilentlyContinue }
 
 if (-not $python -and -not $SkipDeps) {
-    Info "Python was not found. Installing it with winget…"
+    Info "Python was not found. Installing it with winget..."
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         winget install --id Python.Python.3.12 --silent --accept-package-agreements --accept-source-agreements
         $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
@@ -78,7 +78,7 @@ if (-not (Test-Path $sumatra)) {
         $sumatra = $existing.Source
     }
     elseif (-not $SkipDeps) {
-        Info "Installing SumatraPDF…"
+        Info "Installing SumatraPDF..."
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             winget install --id SumatraPDF.SumatraPDF --silent --accept-package-agreements --accept-source-agreements
             $found = @(
@@ -152,7 +152,7 @@ if ($NoVerifyTls) {
 }
 
 # --- Connection test -----------------------------------------------------
-Info "Testing the connection…"
+Info "Testing the connection..."
 & $python.Source (Join-Path $InstallDir 'kpms-agent.py') --config $configPath --test
 if ($LASTEXITCODE -ne 0) {
     Fail "The connection test failed. Fix the problem above, then run this script again."
@@ -193,4 +193,4 @@ Write-Host "  Re-test: $($python.Source) `"$InstallDir\kpms-agent.py`" --config 
 Write-Host "  Remove:  Unregister-ScheduledTask -TaskName $taskName -Confirm:`$false"
 Good ""
 Write-Host "Next: in the admin panel, add the printer with Transport = agent and the"
-Write-Host "queue name exactly as it appears in Windows Settings → Printers & scanners."
+Write-Host "queue name exactly as it appears in Windows Settings -> Printers & scanners."

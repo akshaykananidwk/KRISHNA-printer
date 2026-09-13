@@ -142,6 +142,37 @@ def main() -> int:
     check("an unreadable queue is unknown, never assumed online",
           broken["status"] == "unknown", f"got {broken}")
 
+    # --- The installer script itself ---------------------------------------
+    print("install.ps1 encoding")
+
+    installer = AGENT.parent / "install.ps1"
+    raw = installer.read_bytes()
+
+    body = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    check("install.ps1 starts with a UTF-8 BOM",
+          raw.startswith(b"\xef\xbb\xbf"),
+          "Windows PowerShell 5.1 reads a BOM-less file as ANSI")
+
+    # Windows PowerShell 5.1 decodes a BOM-less script using the system code
+    # page. A UTF-8 em dash becomes three CP1252 characters, the last of which
+    # is a smart quote - and PowerShell accepts smart quotes as string
+    # delimiters, so it silently ends the string it sits inside. That turned
+    # this installer into "Missing closing '}'" on a real Windows 10 machine
+    # while parsing cleanly under PowerShell 7, which assumes UTF-8.
+    offenders = [(i, line) for i, line in enumerate(body.split(b"\n"), 1)
+                 if any(byte > 127 for byte in line)]
+    check("install.ps1 is plain ASCII",
+          not offenders,
+          "non-ASCII on line(s) " + ", ".join(str(i) for i, _ in offenders[:5]))
+
+    # Prove it survives the decoding Windows PowerShell 5.1 would apply.
+    try:
+        body.decode("cp1252")
+        decodes = True
+    except UnicodeDecodeError:
+        decodes = False
+    check("install.ps1 survives a CP1252 read", decodes)
+
     # --- PowerShell generation --------------------------------------------
     print("Generated PowerShell")
 
