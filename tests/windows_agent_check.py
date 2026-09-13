@@ -142,6 +142,58 @@ def main() -> int:
     check("an unreadable queue is unknown, never assumed online",
           broken["status"] == "unknown", f"got {broken}")
 
+    # --- Capability probe --------------------------------------------------
+    print("Capability probe")
+
+    def with_caps(payload, returncode: int = 0) -> None:
+        body = json.dumps(payload) if isinstance(payload, dict) else payload
+        agent.Windows._ps = classmethod(
+            lambda cls, script, timeout=30: FakeResult(body, returncode)
+        )
+
+    # An HP LaserJet M1005: monochrome, one-sided only, no A3.
+    #
+    # The first version of this probe searched the JSON of
+    # Get-PrintConfiguration for "color" and "duplex" and matched the field
+    # *names*, so every Windows printer came back colour and duplex capable.
+    # On this printer that would have offered - and charged for - colour and
+    # double-sided work it cannot do.
+    with_caps({"duplex": ["OneSided"], "color": ["Grayscale", "Monochrome"],
+               "media": ["ISOA4", "ISOA5", "JISB5", "NorthAmericaLetter",
+                         "NorthAmericaLegal"]})
+    mono = agent.Windows.capabilities("HP LaserJet M1005")
+    check("a mono printer is not reported as colour",
+          mono["color_modes"] == ["bw"], f"got {mono}")
+    check("a simplex printer is not reported as duplex",
+          mono["duplex_modes"] == ["single"], f"got {mono}")
+    check("a printer that cannot take A3 is not offered it",
+          "A3" not in mono["paper_sizes"] and "A4" in mono["paper_sizes"],
+          f"got {mono}")
+
+    # A printer that genuinely does colour and duplex must still be recognised.
+    with_caps({"duplex": ["OneSided", "TwoSidedLongEdge"],
+               "color": ["Color", "Grayscale"], "media": ["ISOA4", "ISOA3"]})
+    rich = agent.Windows.capabilities("Colour MFP")
+    check("a colour duplex printer is recognised",
+          rich["color_modes"] == ["bw", "color"]
+          and rich["duplex_modes"] == ["single", "double"]
+          and "A3" in rich["paper_sizes"],
+          f"got {rich}")
+
+    # PowerShell collapses a single-element array to a bare string.
+    with_caps({"duplex": "OneSided", "color": "Grayscale", "media": "ISOA4"})
+    scalar = agent.Windows.capabilities("Simple")
+    check("a single-value reply is read as one value",
+          scalar["color_modes"] == ["bw"] and scalar["paper_sizes"] == ["A4"],
+          f"got {scalar}")
+
+    with_caps("", 1)
+    check("an unreadable driver reports nothing rather than guessing",
+          agent.Windows.capabilities("X") is None)
+    with_caps("not json")
+    check("an unparseable reply reports nothing rather than guessing",
+          agent.Windows.capabilities("X") is None)
+
     # --- Configuration file ------------------------------------------------
     print("Configuration file")
 

@@ -128,6 +128,41 @@ return [
         ],
 
         /**
+         * HP LaserJet M1005 MFP.
+         *
+         * A host-based (GDI) printer: it has no PCL or PostScript interpreter
+         * and no network port at all, only USB. Both facts point the same way
+         * - it can only be driven by a machine running HP's driver, which is
+         * what the location print agent does. There is nothing to connect to
+         * over the network, so no direct transport applies.
+         *
+         * Monochrome, and duplex is manual only: there is no automatic
+         * two-sided unit. Offering double-sided here would take money for
+         * something the machine cannot do unattended.
+         */
+        'hp_laserjet_m1005' => [
+            'label' => 'HP LaserJet M1005 MFP',
+            'manufacturer' => 'HP',
+            'model' => 'LaserJet M1005 MFP',
+            'paper_sizes' => ['A4', 'A5', 'B5', 'Letter', 'Legal'],
+            'default_paper_size' => 'A4',
+            'color_modes' => ['bw'],
+            'duplex' => false,
+            'duplex_paper_sizes' => [],
+            'orientations' => ['portrait', 'landscape'],
+            'resolution' => '600x600',
+            'protocols' => [],
+            'preferred_driver' => 'agent',
+            'requires_rasterisation' => true,
+            'max_media_width_mm' => 216.0,
+            'notes' => 'Monochrome laser MFP, USB only - no Ethernet or Wi-Fi, so it cannot be '
+                . 'reached directly and must be driven by an agent on the machine it is plugged '
+                . 'into. Host-based (GDI): no PCL or PostScript, so documents must be rasterised '
+                . 'by that host. Manual duplex only. A3 exceeds the 216 mm media width.',
+            'source' => 'HP published specification for the LaserJet M1005 MFP.',
+        ],
+
+        /**
          * Generic IPP Everywhere / AirPrint / Mopria printer. These accept
          * PDF or PWG-Raster directly over IPP and report their own
          * capabilities, so the probe fills in the real values.

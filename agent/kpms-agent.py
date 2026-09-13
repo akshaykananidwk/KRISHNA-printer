@@ -631,10 +631,28 @@ class Windows:
             "latency_ms": latency,
         }
 
+    #: System.Printing PageMediaSizeName -> the sizes this application knows.
+    MEDIA_NAMES = {
+        "isoa3": "A3",
+        "isoa4": "A4",
+        "isoa5": "A5",
+        "jisb5": "B5",
+        "northamericaletter": "Letter",
+        "northamericalegal": "Legal",
+    }
+
     @classmethod
     def capabilities(cls, queue: str) -> dict[str, Any] | None:
         """
         What the driver says this printer can do.
+
+        Read from System.Printing's PrintCapabilities, which returns the
+        driver's actual capability collections. An earlier version searched the
+        JSON of Get-PrintConfiguration for the words "color" and "duplex" and
+        so matched the *field names* every time - every Windows printer came
+        back colour-capable and duplex-capable, including a monochrome
+        simplex-only laser. Customers would have been offered, and charged for,
+        colour and double-sided work the machine cannot do.
 
         Reported as a probe, exactly like the CUPS path: the server still keeps
         it separate from a physical test print, because a driver advertising
@@ -642,12 +660,18 @@ class Windows:
         """
         script = (
             "$ErrorActionPreference='Stop';"
-            f"$c = Get-PrintConfiguration -PrinterName {cls._quote(queue)};"
-            f"$caps = (Get-Printer -PrinterName {cls._quote(queue)} -Full).Capabilities;"
-            "[pscustomobject]@{ color=$c.Color; duplex=$c.DuplexingMode; paper=$c.PaperSize;"
-            " caps=$caps } | ConvertTo-Json -Compress -Depth 4"
+            "Add-Type -AssemblyName System.Printing;"
+            "$s = New-Object System.Printing.LocalPrintServer;"
+            f"$q = $s.GetPrintQueue({cls._quote(queue)});"
+            "$c = $q.GetPrintCapabilities();"
+            "[pscustomobject]@{"
+            " duplex = @($c.DuplexingCapability | ForEach-Object { $_.ToString() });"
+            " color  = @($c.OutputColorCapability | ForEach-Object { $_.ToString() });"
+            " media  = @($c.PageMediaSizeCapability | ForEach-Object "
+            "{ $_.PageMediaSizeName.ToString() })"
+            "} | ConvertTo-Json -Compress -Depth 3"
         )
-        result = cls._ps(script)
+        result = cls._ps(script, timeout=60)
         if result.returncode != 0:
             return None
 
@@ -656,18 +680,29 @@ class Windows:
         except (ValueError, TypeError):
             return None
 
-        blob = json.dumps(data).lower()
+        def values(key: str) -> list[str]:
+            raw = data.get(key) or []
+            if isinstance(raw, str):
+                raw = [raw]
+            return [str(item).lower() for item in raw]
 
         sizes: list[str] = []
-        for name, aliases in (
-            ("A4", ("a4",)), ("A5", ("a5",)), ("A3", ("a3",)), ("B5", ("b5",)),
-            ("Letter", ("letter", "na_letter")), ("Legal", ("legal", "na_legal")),
-        ):
-            if any(alias in blob for alias in aliases):
-                sizes.append(name)
+        for name in values("media"):
+            mapped = cls.MEDIA_NAMES.get(name)
+            if mapped and mapped not in sizes:
+                sizes.append(mapped)
 
-        colour_capable = bool(data.get("color")) or "color" in blob
-        duplex_capable = "twosided" in blob or "duplex" in blob
+        # OutputColor is an enum: Color, Grayscale, Monochrome. Only the first
+        # of those means this printer can put colour on paper.
+        colour_capable = "color" in values("color")
+
+        # DuplexingCapability lists the modes the driver will accept. Manual
+        # duplex is not automatic duplex and must not be offered as it: a job
+        # sent double-sided to a printer that cannot do it prints single-sided
+        # and the customer has paid for something they did not get.
+        duplex_capable = any(
+            mode.startswith("twosided") for mode in values("duplex")
+        )
 
         return {
             "paper_sizes": sizes,

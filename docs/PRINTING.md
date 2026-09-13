@@ -79,7 +79,7 @@ automatically at startup and named in the log:
 | | Linux / macOS | Windows |
 |---|---|---|
 | Printer state | `lpstat` | `Win32_Printer` via PowerShell |
-| Capabilities | `lpoptions` | `Get-PrintConfiguration` |
+| Capabilities | `lpoptions` | `System.Printing` PrintCapabilities |
 | Paper, colour, duplex | `lp -o` | `Set-PrintConfiguration` on the queue |
 | Copies, page range | `lp -o` | SumatraPDF `-print-settings` |
 | Office → PDF | LibreOffice | LibreOffice |
