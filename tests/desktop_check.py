@@ -180,6 +180,41 @@ def main() -> int:
     check("printing cannot be started before connecting",
           str(app.start_btn.cget("state")) == "disabled")
 
+    print("Queues that write files")
+
+    # The window must mark a file-writing queue before somebody picks it and
+    # waits at the counter for paper that was never coming.
+    app.local_printers = [
+        {"queue": "HP LaserJet M1005", "capabilities": {}, "virtual": False},
+        {"queue": "Microsoft Print to PDF", "capabilities": {}, "virtual": True},
+    ]
+    app.registered = {}
+    app._printers_read(app.local_printers, None)
+
+    rows = {iid: app.printer_tree.item(iid, "values") for iid in app.printer_tree.get_children()}
+    check("a real printer is offered normally",
+          rows.get("HP LaserJet M1005", ("",) * 5)[4] == "Not added",
+          f"got {rows.get('HP LaserJet M1005')}")
+    check("a file-writing one is marked as not a printer",
+          rows.get("Microsoft Print to PDF", ("",) * 5)[4] == "Not a printer",
+          f"got {rows.get('Microsoft Print to PDF')}")
+
+    # Adding one asks first - refused, nothing is sent.
+    asked: list[str] = []
+    saved_ask = desktop.messagebox.askokcancel
+    desktop.messagebox.askokcancel = lambda title, text: (asked.append(text), False)[1]
+    try:
+        app.printer_tree.selection_set("Microsoft Print to PDF")
+        app.register_selected()
+    finally:
+        desktop.messagebox.askokcancel = saved_ask
+
+    check("adding a file-writing queue asks first",
+          len(asked) == 1 and "writes a file" in asked[0], f"got {asked}")
+    check("and saying no sends nothing",
+          str(app.add_btn.cget("state")) != "disabled",
+          "it went ahead and started registering anyway")
+
     print("Updating from inside the window")
 
     check("there is somewhere to start an update from",

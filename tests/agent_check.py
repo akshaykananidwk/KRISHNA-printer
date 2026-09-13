@@ -415,10 +415,54 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
+    # --- Queues that are not printers --------------------------------------
+    print("Queues that write files")
+
+    # Microsoft Print to PDF is the one that caught a real operator out: the
+    # agent submitted, SumatraPDF exited 0, nothing ever reached the spooler,
+    # and thirty seconds later the message blamed the spool settings. The port
+    # is the reliable signal - a renamed queue keeps it.
+    check("a Save-As port is recognised",
+          agent.looks_virtual("Anything At All", "PORTPROMPT:"))
+    check("so is a fax port", agent.looks_virtual("Office Machine", "SHRFAX:"))
+    check("so is printing to a file", agent.looks_virtual("Whatever", "FILE:"))
+
+    # And the name, for a queue whose port cannot be read. "Fax" is the queue a
+    # multifunction machine installs beside its printer queue: it really is a
+    # fax and really cannot print.
+    for name in ("Microsoft Print to PDF", "Microsoft XPS Document Writer",
+                 "Send To OneNote 16", "Fax", "HP LaserJet MFP M234 Fax",
+                 "Foxit PDF Writer"):
+        check(f"{name!r} is recognised by name alone", agent.looks_virtual(name))
+
+    # Real printers must not be swept up. This is the half that matters: a
+    # false positive warns an operator away from the printer they actually own,
+    # which is worse than missing a virtual one - the port check is there for
+    # the ones a name cannot settle.
+    for name, port in [
+        ("HP LaserJet M1005", "USB001"),
+        ("Canon PIXMA GM4070", "192.168.1.50"),
+        ("Office Laser", "WSD-8f2c"),
+        ("Reception HP", ""),
+        # Named by a shop, not by a driver. "pdf" and "fax" as bare substrings
+        # would flag both of these.
+        ("Front desk (PDF and print)", "USB001"),
+        ("Faxton Road Branch", "USB002"),
+    ]:
+        check(f"{name!r} is left alone", not agent.looks_virtual(name, port))
+
+    # The failure message must name the real cause rather than the spooler.
+    source = AGENT.read_text()
+    submit = source[source.index("job_id = cls._await_spooled"):]
+    submit = submit[:submit.index("return True")]
+    check("a job that never queued checks for this first",
+          "looks_virtual" in submit and submit.index("looks_virtual") < submit.index("SumatraPDF ran"),
+          "the generic spooler advice comes first, so the real cause is never reached")
+    check("and says so in words an operator can act on",
+          "does not print onto paper" in submit)
+
     # --- Saying which backend refused --------------------------------------
     print("Naming the backend")
-
-    source = AGENT.read_text()
 
     # The log read "CUPS rejected job AK100023" on a Windows counter PC, which
     # sends whoever reads it looking for a CUPS that is not installed and never

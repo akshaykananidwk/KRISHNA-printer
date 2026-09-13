@@ -1151,10 +1151,18 @@ class DesktopApp:
 
         def work():
             names = spooler.local_printers()
+            # Ports, where the backend can report them, so a queue that writes
+            # a file instead of printing can be marked before somebody picks it
+            # and waits for paper that was never coming.
+            ports = spooler.printer_ports() if hasattr(spooler, "printer_ports") else {}
             found = []
             for name in names:
                 capabilities = spooler.capabilities(name) or {}
-                found.append({"queue": name, "capabilities": capabilities})
+                found.append({
+                    "queue": name,
+                    "capabilities": capabilities,
+                    "virtual": module.looks_virtual(name, ports.get(name, "")),
+                })
             return found
 
         self._in_background(work, self._printers_read)
@@ -1172,7 +1180,10 @@ class DesktopApp:
             colour = "Colour" if "color" in capabilities.get("color_modes", []) else "Black & white"
             sides = "Single & double" if "double" in capabilities.get("duplex_modes", []) else "Single only"
             sizes = ", ".join(capabilities.get("paper_sizes", [])) or "not reported"
-            state = "Added" if entry["queue"] in self.registered else "Not added"
+            if entry.get("virtual"):
+                state = "Not a printer"
+            else:
+                state = "Added" if entry["queue"] in self.registered else "Not added"
             self.printer_tree.insert("", "end", iid=entry["queue"],
                                      values=(entry["queue"], colour, sides, sizes, state))
 
@@ -1193,6 +1204,17 @@ class DesktopApp:
         profile_key = getattr(self, "profile_by_label", {}).get(self.profile_var.get(), "generic")
         entry = next((p for p in self.local_printers if p["queue"] == queue_name), None)
         capabilities = entry["capabilities"] if entry else {}
+
+        # Asked rather than refused: somebody may genuinely want a file-writing
+        # queue for a trial. But they should find out here, not from a customer
+        # standing at the counter waiting for a page that was never coming.
+        if entry is not None and entry.get("virtual") and not messagebox.askokcancel(
+            APP_NAME,
+            f"\u201c{queue_name}\u201d writes a file instead of printing onto paper. "
+            "It asks where to save, in a window nobody will be there to answer, so jobs "
+            "sent to it will fail.\n\nAdd it anyway?",
+        ):
+            return
 
         api = self.api
         self.add_btn.configure(state="disabled")

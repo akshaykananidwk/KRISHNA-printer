@@ -160,6 +160,56 @@ def is_newer(candidate: str, current: str) -> bool:
     return version_tuple(candidate) > version_tuple(current)
 
 
+# Windows ports that mean "this is not a printer".
+#
+# PORTPROMPT: is Microsoft Print to PDF and the XPS Document Writer: printing
+# to one opens a Save As dialog and waits for somebody to answer it. Run from a
+# background service with no desktop attention on it, nobody ever does, and the
+# job never reaches the spooler at all. The agent waited thirty seconds and
+# then reported that nothing had been queued - true, and no help at all to
+# somebody who had just chosen that printer from a list.
+VIRTUAL_PORTS = {"PORTPROMPT:", "SHRFAX:", "FILE:", "NUL:"}
+
+# Phrases distinctive enough that no real printer carries them.
+#
+# Whole phrases, not words: "pdf" alone would flag a counter queue somebody
+# named "Front desk (PDF and print)", and warning an operator away from the
+# printer they actually own is a worse failure than missing a virtual one. The
+# port check below catches what these miss.
+VIRTUAL_NAME_HINTS = (
+    "print to pdf",
+    "pdf writer",
+    "pdf creator",
+    "xps document writer",
+    "microsoft office document image writer",
+    "onenote",
+    "print to file",
+    "shared fax",
+)
+
+# "Fax" on its own is the queue a multifunction machine installs beside its
+# printer queue - "HP LaserJet MFP M234 Fax" really is a fax and really cannot
+# print. Matched as a whole word so "Faxton Road Branch" is left alone.
+FAX_QUEUE = re.compile(r"(^|[\s(\[-])fax([\s)\]-]|$)", re.IGNORECASE)
+
+
+def looks_virtual(name: str, port: str = "") -> bool:
+    """
+    Whether a queue writes a file or asks a question instead of printing.
+
+    The port is the reliable signal and the name is the fallback, because a
+    renamed queue keeps its port while a driver installed under another name
+    keeps neither. Both are advisory: this decides what to warn about, never
+    what to refuse.
+    """
+    if port.strip().upper() in VIRTUAL_PORTS:
+        return True
+    lowered = name.lower()
+    if any(hint in lowered for hint in VIRTUAL_NAME_HINTS):
+        return True
+    return FAX_QUEUE.search(name) is not None
+
+
 def run_quiet(args, **kwargs) -> subprocess.CompletedProcess:
     """
     subprocess.run that never flashes a window.
@@ -753,6 +803,24 @@ class Windows:
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     @classmethod
+    def printer_ports(cls) -> dict[str, str]:
+        """Each queue's port, which is how a file-writing queue gives itself away."""
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "Get-Printer | ForEach-Object { $_.Name + '\t' + $_.PortName }"
+        )
+        result = cls._ps(script, timeout=60)
+        if result.returncode != 0:
+            return {}
+
+        ports: dict[str, str] = {}
+        for line in result.stdout.splitlines():
+            if "\t" in line:
+                name, port = line.split("\t", 1)
+                ports[name.strip()] = port.strip()
+        return ports
+
+    @classmethod
     def printer_state(cls, queue: str) -> dict[str, Any]:
         started = time.monotonic()
         script = (
@@ -973,6 +1041,15 @@ class Windows:
         # their document had printed while the printer had not moved.
         job_id = cls._await_spooled(queue, before)
         if job_id is None:
+            # Before blaming the spooler, check whether this queue was ever
+            # going to put anything in it.
+            if looks_virtual(queue, cls.printer_ports().get(queue, "")):
+                return False, (
+                    f"\u201c{queue}\u201d does not print onto paper \u2014 it writes a file, and "
+                    "asks where to save it in a window that nobody is there to answer. "
+                    "Choose the real printer instead."
+                ), None
+
             return False, (
                 "SumatraPDF ran without error but no job appeared in the Windows print "
                 "queue, so nothing was printed. Check that the printer is not paused, and "
