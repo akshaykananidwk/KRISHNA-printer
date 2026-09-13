@@ -75,6 +75,10 @@ Raspberry Pi is ample) or **Windows 10/11** through the print spooler. No
 Windows machine is *required* anywhere — but where one is already sitting on the
 counter, it can do the job.
 
+On Windows there is also a **desktop app** — paste the token, pick a printer,
+done, with no command line at all. See
+[agent/desktop/README.md](agent/desktop/README.md).
+
 The server can also speak **IPP**, **RAW/9100** and **LPD/LPR** directly, for
 printers on a network the server can reach. Those drivers are honest about what
 they cannot do: the RAW driver refuses a PDF for a printer with no PostScript or
@@ -122,6 +126,7 @@ machine that tops out at A4.
 |---|---|
 | [docs/INSTALL.md](docs/INSTALL.md) | Requirements, the wizard, post-install hardening |
 | [docs/PRINTING.md](docs/PRINTING.md) | Transports, the agent, the GM4070, documented limitations |
+| [agent/desktop/README.md](agent/desktop/README.md) | The Windows desktop app: running it, building the .exe |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Layout, services, request lifecycle, data model |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | Cron, the worker, backups, updates, rollback, monitoring |
 | [docs/SECURITY.md](docs/SECURITY.md) | The security model and how each control is enforced |

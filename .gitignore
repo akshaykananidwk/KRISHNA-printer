@@ -35,3 +35,9 @@ Thumbs.db
 *.swp
 .idea/
 .vscode/
+
+# Desktop agent build output
+/agent/desktop/build/
+/agent/desktop/dist/
+/agent/desktop/*.spec
+__pycache__/

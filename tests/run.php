@@ -2555,6 +2555,130 @@ $runner->test('TG.6', 'A printer with work in progress is not deleted out from u
     );
 });
 
+$runner->test('TD.1', 'The agent API registers a printer for the agent that asked', 'created once, scoped to that device', function () use ($baseUrl, $connectDb, $adminClient) {
+    $db = $connectDb();
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+
+    $adminClient->get('/admin/devices');
+    $page = $adminClient->submitForm('/admin/devices', [
+        'name' => 'Desktop App Agent',
+        'location_id' => (string) $locationId,
+        'poll_interval_secs' => '10',
+    ]);
+    if (preg_match('#id="agentToken">([^<]+)<#', $page['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'No agent token was issued.'];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+    $deviceId = (int) $db->scalar('SELECT id FROM devices ORDER BY id DESC LIMIT 1');
+
+    $call = static function (string $path, ?array $payload, string $method = 'POST') use ($baseUrl, $token): array {
+        $curl = curl_init($baseUrl . $path);
+        $options = [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token, 'Content-Type: application/json'],
+        ];
+        if ($payload !== null) {
+            $options[CURLOPT_POSTFIELDS] = json_encode($payload);
+        }
+        curl_setopt_array($curl, $options);
+        $body = (string) curl_exec($curl);
+        $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        curl_close($curl);
+        return [$status, json_decode($body, true) ?: []];
+    };
+
+    $queue = 'Desk Printer ' . bin2hex(random_bytes(2));
+    [$firstStatus, $first] = $call('/api/agent/printers', [
+        'queue_name' => $queue,
+        'name' => $queue,
+        'capability_profile' => 'hp_laserjet_m1005',
+    ]);
+
+    // Registering the same queue again must update, never duplicate: one
+    // physical machine is one printer.
+    [$secondStatus, $second] = $call('/api/agent/printers', ['queue_name' => $queue]);
+
+    $rows = $db->select(
+        'SELECT id, location_id, device_id, capability_profile FROM printers WHERE queue_name = ? AND deleted_at IS NULL',
+        [$queue]
+    );
+    $connection = $db->selectOne(
+        'SELECT driver FROM printer_connections WHERE printer_id = ?',
+        [(int) ($rows[0]['id'] ?? 0)]
+    );
+
+    $ok = $firstStatus === 201 && ($first['created'] ?? null) === true
+        && $secondStatus === 200 && ($second['created'] ?? null) === false
+        && count($rows) === 1
+        && (int) $rows[0]['device_id'] === $deviceId
+        && (int) $rows[0]['location_id'] === $locationId
+        && (string) $rows[0]['capability_profile'] === 'hp_laserjet_m1005'
+        && (string) ($connection['driver'] ?? '') === 'agent';
+
+    return TestRunner::assertTrue(
+        $ok,
+        sprintf('Created as %s on the agent transport, bound to its own device and location; '
+            . 're-registering updated it instead of adding a second printer.',
+            (string) ($first['printer']['code'] ?? '?')),
+        sprintf('first=%d/%s second=%d/%s rows=%d device=%s profile=%s driver=%s',
+            $firstStatus, json_encode($first['created'] ?? null),
+            $secondStatus, json_encode($second['created'] ?? null),
+            count($rows), $rows[0]['device_id'] ?? '-',
+            $rows[0]['capability_profile'] ?? '-', $connection['driver'] ?? '-')
+    );
+});
+
+$runner->test('TD.2', 'The desktop window connects, lists printers and registers one', 'driven for real, headlessly', function () use ($baseUrl, $basePath, $connectDb, $adminClient) {
+    // The window is built and driven for real against the running server. The
+    // Windows spooler is stubbed - there is none here - but everything else is
+    // the shipping code path.
+    $script = $basePath . '/tests/desktop_check.py';
+    if (!is_file($script)) {
+        return ['pass' => false, 'actual' => 'tests/desktop_check.py is missing.'];
+    }
+
+    $probe = shell_exec('python3 -c "import tkinter" 2>&1');
+    if (trim((string) $probe) !== '') {
+        return ['pass' => null, 'actual' => 'tkinter is not installed on this machine.'];
+    }
+    if (getenv('DISPLAY') === false) {
+        return ['pass' => null, 'actual' => 'No X display; run under Xvfb to exercise the window.'];
+    }
+
+    $db = $connectDb();
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+    $adminClient->get('/admin/devices');
+    $page = $adminClient->submitForm('/admin/devices', [
+        'name' => 'Desktop Window Agent',
+        'location_id' => (string) $locationId,
+        'poll_interval_secs' => '10',
+    ]);
+    if (preg_match('#id="agentToken">([^<]+)<#', $page['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'No agent token was issued.'];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+
+    $command = sprintf(
+        'python3 %s %s %s 2>&1',
+        escapeshellarg($script),
+        escapeshellarg($baseUrl),
+        escapeshellarg($token)
+    );
+    $output = (string) shell_exec($command);
+
+    $summary = '';
+    if (preg_match('/^(\d+ passed, \d+ failed.*)$/m', $output, $mm) === 1) {
+        $summary = trim($mm[1]);
+    }
+
+    return TestRunner::assertTrue(
+        str_contains($output, ', 0 failed'),
+        $summary !== '' ? $summary : 'Every desktop window check passed.',
+        $summary !== '' ? $summary : trim(substr($output, -300))
+    );
+});
+
 $runner->group('Transport limitations are enforced, not hidden');
 
 $runner->test('TL.1', 'RAW/9100 refuses a PDF for a printer with no interpreter', 'a permanent, explained failure', function () use ($basePath, $rawPort, $makePdf, $scratch) {

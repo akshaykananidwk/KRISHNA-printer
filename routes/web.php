@@ -238,6 +238,8 @@ $router->group(['prefix' => '/api/agent', 'middleware' => ['install_guard', 'htt
     $router->get('/jobs/{number:[A-Z0-9]{4,24}}/document', Api\AgentController::class . '@document');
     $router->post('/jobs/{number:[A-Z0-9]{4,24}}/status', Api\AgentController::class . '@reportStatus');
     $router->post('/capabilities', Api\AgentController::class . '@reportCapabilities');
+    $router->post('/printers', Api\AgentController::class . '@registerPrinter');
+    $router->get('/profiles', Api\AgentController::class . '@profiles');
 });
 
 // ---------------------------------------------------------------------

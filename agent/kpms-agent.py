@@ -230,6 +230,14 @@ class Cups:
         return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
 
     @classmethod
+    def local_printers(cls) -> list[str]:
+        """Every queue CUPS knows about, for the desktop app's picker."""
+        result = cls._run(["lpstat", "-e"])
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+    @classmethod
     def printer_state(cls, queue: str) -> dict[str, Any]:
         """
         Read a queue's real state. This is what makes the customer-facing
@@ -584,6 +592,20 @@ class Windows:
     def _quote(value: str) -> str:
         """Single-quote a value for PowerShell, escaping embedded quotes."""
         return "'" + value.replace("'", "''") + "'"
+
+    @classmethod
+    def local_printers(cls) -> list[str]:
+        """Every printer installed on this machine, for the desktop app."""
+        # One name per line, which is what PowerShell does with a stream of
+        # strings anyway - no -join, and so no quoting to get wrong.
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            "Get-Printer | ForEach-Object { $_.Name }"
+        )
+        result = cls._ps(script, timeout=60)
+        if result.returncode != 0:
+            return []
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     @classmethod
     def printer_state(cls, queue: str) -> dict[str, Any]:

@@ -39,7 +39,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     Fail "Run this in an Administrator PowerShell window (right-click -> Run as administrator)."
 }
 
-if ($Server -notmatch '^https://' -and $Server -notmatch '^http://localhost') {
+# HTTPS, or loopback for a local trial - 127.0.0.1 is as local as the name is.
+if ($Server -notmatch '^https://' -and $Server -notmatch '^http://(localhost|127\.0\.0\.1|\[::1\])') {
     Fail "The server address must start with https:// - the agent carries a token and customer documents."
 }
 $Server = $Server.TrimEnd('/')

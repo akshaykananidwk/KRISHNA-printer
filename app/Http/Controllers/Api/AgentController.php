@@ -507,6 +507,170 @@ final class AgentController extends Controller
     }
 
     /** GET /api/agent/config — what this agent should be managing. */
+    /**
+     * GET /api/agent/profiles
+     *
+     * The model profiles this installation knows about, so the desktop app can
+     * offer them rather than guessing.
+     *
+     * A curated list, not a web lookup. What matters for charging a customer
+     * correctly - whether duplex is automatic or manual, whether the mono
+     * model takes the optional colour cartridge - is exactly what a search
+     * result will not tell you reliably, and a wrong answer here is a refund.
+     * These entries are written from the manufacturer's own specification, and
+     * even then they are only declared: nothing is offered to a customer until
+     * it has been probed or test-printed.
+     */
+    public function profiles(Request $request): Response
+    {
+        $profiles = (array) Config::get('printing.profiles', []);
+
+        $out = [];
+        foreach ($profiles as $key => $profile) {
+            $out[] = [
+                'key' => (string) $key,
+                'label' => (string) ($profile['label'] ?? $key),
+                'manufacturer' => $profile['manufacturer'] ?? null,
+                'model' => $profile['model'] ?? null,
+                'paper_sizes' => array_values((array) ($profile['paper_sizes'] ?? [])),
+                'color_modes' => array_values((array) ($profile['color_modes'] ?? [])),
+                'duplex' => (bool) ($profile['duplex'] ?? false),
+                'notes' => (string) ($profile['notes'] ?? ''),
+            ];
+        }
+
+        return $this->json(['success' => true, 'profiles' => $out]);
+    }
+
+    /**
+     * POST /api/agent/printers
+     *
+     * Register a printer the agent can see on its own machine.
+     *
+     * The desktop app lists the local print queues and the operator picks one;
+     * this is what turns that choice into a printer in the estate. The agent
+     * may only ever create a printer at its own location and bound to itself,
+     * both taken from the token rather than from the request, so a compromised
+     * agent cannot attach a printer to someone else's shop.
+     *
+     * Capabilities are not accepted here. They arrive through
+     * /api/agent/capabilities as a probe, and stay separate from an operator's
+     * test print, exactly as they do for every other printer.
+     */
+    public function registerPrinter(Request $request): Response
+    {
+        $deviceId = $request->attribute('device_id');
+        if (!is_int($deviceId)) {
+            return $this->fail('This token is not bound to a print agent.', 403);
+        }
+
+        $device = $this->devices->find($deviceId);
+        if ($device === null) {
+            return $this->fail('That print agent no longer exists.', 404);
+        }
+
+        $data = Validator::make($request->all(), [
+            'queue_name' => 'required|string|max:120',
+            'name' => 'nullable|string|max:150',
+            'model' => 'nullable|string|max:120',
+            'manufacturer' => 'nullable|string|max:80',
+            'capability_profile' => 'nullable|string|max:60',
+        ])->validated();
+
+        $queueName = trim((string) $data['queue_name']);
+        $name = trim((string) ($data['name'] ?? '')) ?: $queueName;
+
+        // Re-registering the same queue updates it rather than creating a
+        // second printer for one physical machine.
+        $existing = $this->db->selectOne(
+            'SELECT id FROM printers WHERE device_id = ? AND queue_name = ? AND deleted_at IS NULL',
+            [$deviceId, $queueName]
+        );
+
+        $profiles = (array) Config::get('printing.profiles', []);
+        $requestedProfile = trim((string) ($data['capability_profile'] ?? ''));
+        $profile = isset($profiles[$requestedProfile]) ? $requestedProfile : 'generic';
+
+        $fields = [
+            'location_id' => (int) $device['location_id'],
+            'device_id' => $deviceId,
+            'name' => $name,
+            'queue_name' => $queueName,
+            'model' => $data['model'] ?? null,
+            'manufacturer' => $data['manufacturer'] ?? null,
+        ];
+
+        // Only set the profile when one was actually asked for. Re-registering
+        // a queue without naming a profile must not quietly reset a printer an
+        // operator has already classified.
+        if ($requestedProfile !== '') {
+            $fields['capability_profile'] = $profile;
+        }
+
+        if ($existing !== null) {
+            $printerId = (int) $existing['id'];
+            $this->printers->updateById($printerId, $fields);
+            $created = false;
+        } else {
+            $fields['capability_profile'] = $profile;
+            $fields['code'] = $this->uniquePrinterCode($queueName);
+            $fields['status'] = 'unknown';
+            $fields['is_enabled'] = 1;
+            $printerId = $this->printers->create($fields);
+            $created = true;
+
+            $this->db->insert('printer_connections', [
+                'printer_id' => $printerId,
+                'driver' => 'agent',
+                'priority' => 1,
+                'is_enabled' => 1,
+            ]);
+        }
+
+        $printer = $this->printers->find($printerId);
+
+        $this->audit->log(
+            $created ? 'printer.registered_by_agent' : 'printer.updated_by_agent',
+            sprintf(
+                '%s printer "%s" (queue %s) from the "%s" print agent.',
+                $created ? 'Registered' : 'Updated',
+                $name,
+                $queueName,
+                (string) $device['name']
+            ),
+            'printer',
+            (string) $printerId
+        );
+
+        return $this->json([
+            'success' => true,
+            'created' => $created,
+            'printer' => [
+                'id' => $printerId,
+                'code' => $printer?->string('code'),
+                'name' => $name,
+                'queue_name' => $queueName,
+                'profile' => $printer?->string('capability_profile') ?? $profile,
+            ],
+        ], $created ? 201 : 200);
+    }
+
+    /** A short, unique, readable code derived from the queue name. */
+    private function uniquePrinterCode(string $queueName): string
+    {
+        $base = strtolower((string) preg_replace('/[^A-Za-z0-9]+/', '-', $queueName));
+        $base = trim($base, '-');
+        $base = $base === '' ? 'printer' : substr($base, 0, 30);
+
+        $code = $base;
+        $suffix = 1;
+        while ($this->printers->codeExists($code)) {
+            $suffix++;
+            $code = substr($base, 0, 30 - strlen((string) $suffix) - 1) . '-' . $suffix;
+        }
+        return $code;
+    }
+
     public function config(Request $request): Response
     {
         $deviceId = $request->attribute('device_id');
