@@ -2411,6 +2411,90 @@ $runner->test('TG.2', 'The agent handles its options, its printers and its own c
     );
 });
 
+$runner->test('TG.3', 'An operator can send a test page from the printer page', 'a real job, queued, not charged', function () use ($adminClient, $connectDb, $basePath, &$state) {
+    $db = $connectDb();
+    $printerId = (int) $state['printer_id'];
+
+    $before = (int) $db->scalar('SELECT COUNT(*) FROM print_jobs');
+
+    $page = $adminClient->get('/admin/printers/' . $printerId);
+    if (!str_contains($page['body'], 'Send test page')) {
+        return ['pass' => false, 'actual' => 'The printer page has no test print control.'];
+    }
+
+    $response = $adminClient->submitForm('/admin/printers/' . $printerId . '/test-print', []);
+
+    $job = $db->selectOne(
+        'SELECT * FROM print_jobs WHERE printer_id = ? ORDER BY id DESC LIMIT 1',
+        [$printerId]
+    );
+    $after = (int) $db->scalar('SELECT COUNT(*) FROM print_jobs');
+
+    if ($job === null || $after !== $before + 1) {
+        return ['pass' => false, 'actual' => 'HTTP ' . $response['status'] . '; no job was created.'];
+    }
+
+    // It must be a genuine PDF on disk, because the agent will download and
+    // print exactly this file.
+    $file = $db->selectOne('SELECT * FROM print_files WHERE id = ?', [(int) $job['file_id']]);
+    $path = $basePath . '/uploads/' . ltrim((string) ($file['relative_path'] ?? ''), '/');
+    $header = is_file($path) ? (string) file_get_contents($path, false, null, 0, 5) : '';
+
+    $queued = (string) $job['status'] === 'queued';
+    $free = (int) $job['total_paise'] === 0;
+    $safeOptions = (int) $job['copies'] === 1
+        && (string) $job['color_mode'] === 'bw'
+        && (string) $job['paper_size'] === 'A4'
+        && (string) $job['duplex'] === 'single';
+    $unowned = $job['session_id'] === null;
+
+    return TestRunner::assertTrue(
+        $queued && $free && $safeOptions && $unowned && $header === '%PDF-',
+        sprintf('%s queued free of charge as 1 copy, A4, B&W, single sided, with a real PDF on disk '
+            . 'and no customer session attached.', (string) $job['job_number']),
+        sprintf('status=%s total=%d copies=%d session=%s header=%s',
+            $job['status'], (int) $job['total_paise'], (int) $job['copies'],
+            var_export($job['session_id'], true), $header)
+    );
+});
+
+$runner->test('TG.4', 'A test page prints on a printer with nothing verified yet', 'not blocked by capability checks', function () use ($adminClient, $connectDb) {
+    // The point of a test print is to establish what a printer can do, so it
+    // cannot be gated on what has already been established. A customer job on
+    // this printer is refused; the test page is not.
+    $db = $connectDb();
+
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+    $printerId = (int) $db->insert('printers', [
+        'location_id' => $locationId,
+        'name' => 'Unverified printer',
+        'code' => 'unverified-' . bin2hex(random_bytes(3)),
+        'capability_profile' => 'generic',
+        'status' => 'unknown',
+        'is_enabled' => 1,
+    ]);
+
+    $verified = (int) $db->scalar(
+        "SELECT COUNT(*) FROM printer_capabilities WHERE printer_id = ? AND source IN ('probed','manual')",
+        [$printerId]
+    );
+
+    $response = $adminClient->submitForm('/admin/printers/' . $printerId . '/test-print', []);
+    $job = $db->selectOne(
+        'SELECT job_number, status FROM print_jobs WHERE printer_id = ? ORDER BY id DESC LIMIT 1',
+        [$printerId]
+    );
+
+    return TestRunner::assertTrue(
+        $verified === 0 && $job !== null && (string) $job['status'] === 'queued',
+        sprintf('%d capabilities verified on this printer, and the test page still queued as %s.',
+            $verified, (string) ($job['job_number'] ?? '?')),
+        sprintf('verified=%d job=%s status=%s http=%d', $verified,
+            (string) ($job['job_number'] ?? 'none'),
+            (string) ($job['status'] ?? '-'), $response['status'])
+    );
+});
+
 $runner->group('Transport limitations are enforced, not hidden');
 
 $runner->test('TL.1', 'RAW/9100 refuses a PDF for a printer with no interpreter', 'a permanent, explained failure', function () use ($basePath, $rawPort, $makePdf, $scratch) {

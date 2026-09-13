@@ -140,6 +140,7 @@ $router->group([
             $router->delete('/printers/{id:\d+}', Admin\PrinterController::class . '@destroy');
             $router->post('/printers/{id:\d+}/test', Admin\PrinterController::class . '@test');
             $router->post('/printers/{id:\d+}/probe', Admin\PrinterController::class . '@probe');
+            $router->post('/printers/{id:\d+}/test-print', Admin\PrinterController::class . '@testPrint');
             $router->post('/printers/{id:\d+}/verify-capability', Admin\PrinterController::class . '@verifyCapability');
             $router->post('/printers/{id:\d+}/toggle', Admin\PrinterController::class . '@toggle');
             $router->post('/printers/{id:\d+}/maintenance', Admin\PrinterController::class . '@setMaintenance');

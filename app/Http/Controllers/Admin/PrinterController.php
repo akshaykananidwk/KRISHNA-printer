@@ -19,6 +19,7 @@ use App\Repositories\PrintJobRepository;
 use App\Services\AuditService;
 use App\Services\PrinterCapabilityService;
 use App\Services\PrinterService;
+use App\Services\PrintQueueService;
 
 final class PrinterController extends Controller
 {
@@ -31,6 +32,7 @@ final class PrinterController extends Controller
         private PrinterCapabilityService $capabilities,
         private PrinterService $printerService,
         private PrintJobRepository $jobs,
+        private PrintQueueService $queue,
         private AuditService $audit
     ) {
     }
@@ -261,6 +263,53 @@ final class PrinterController extends Controller
             'recorded' => $result['recorded'],
             'capabilities' => $result['capabilities'],
         ], $result['success'] ? 200 : 422);
+    }
+
+    /**
+     * POST /admin/printers/{id}/test-print
+     *
+     * Queue a real test page through the ordinary pipeline, so an operator can
+     * confirm the whole path - server, agent, driver, paper - without going
+     * round through the customer QR flow to do it.
+     */
+    public function testPrint(Request $request): Response
+    {
+        $printer = $this->printers->find((int) $request->routeParam('id'));
+        if ($printer === null) {
+            return $this->fail('That printer was not found.', 404);
+        }
+
+        $admin = $request->attribute('admin');
+        $result = $this->queue->createTestPrint(
+            $printer->id(),
+            $admin === null ? null : (string) $admin->id(),
+            $admin === null ? 'an operator' : $admin->string('name')
+        );
+
+        if (!($result['success'] ?? false)) {
+            return $this->redirect(
+                '/admin/printers/' . $printer->id(),
+                'error',
+                (string) ($result['error'] ?? 'The test page could not be queued.')
+            );
+        }
+
+        $this->audit->log(
+            'printer.test_print',
+            sprintf('Queued test print %s on "%s".', $result['job_number'], $printer->string('name')),
+            'printer',
+            (string) $printer->id()
+        );
+
+        return $this->redirect(
+            '/admin/printers/' . $printer->id(),
+            'success',
+            sprintf(
+                'Test page queued as %s. Watch its progress on the job page - it will say '
+                . 'why if it does not print.',
+                $result['job_number']
+            )
+        );
     }
 
     /**

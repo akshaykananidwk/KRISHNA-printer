@@ -171,6 +171,23 @@ output exposes internals to anyone who can reach the URL.
 The audit trail — who changed what, and when — is in Admin → System →
 Activity, backed by `activity_logs`.
 
+### Testing a printer
+
+Admin → Printers → the printer gives three separate things, in increasing
+strength:
+
+| Control | What it proves |
+|---|---|
+| **Test connection** | The server or agent can reach the printer, and what state it reports. |
+| **Probe capabilities** | What the driver says the printer can do. |
+| **Send test page** | That paper actually comes out. |
+
+**Send test page** queues a real one-page A4 job through the ordinary pipeline
+— same queue, same agent, same status reporting — so a page that prints proves
+customer jobs will too. It is never charged for, and it works on a printer with
+nothing verified yet, because verifying is what it is for. Watch it on the job
+page: if it does not print, the job says why.
+
 ### When a printer goes offline
 
 1. Admin → Printers → the printer → **Test connection**. The error is reported

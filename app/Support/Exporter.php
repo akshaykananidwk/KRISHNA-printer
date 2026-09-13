@@ -192,6 +192,60 @@ final class Exporter
         return self::assemblePdf($pages, $pageWidth, $pageHeight, $title);
     }
 
+    /**
+     * A single portrait A4 page, for an operator test print.
+     *
+     * Deliberately plain: solid rules at known positions and a line of text in
+     * each corner region, so a glance at the sheet says whether the printer
+     * fed straight, reached the edges and rendered text at all.
+     *
+     * @param array<int,string> $lines
+     */
+    public static function testPage(string $title, array $lines): string
+    {
+        $width = 595.28;   // A4 portrait, PostScript points
+        $height = 841.89;
+        $margin = 48.0;
+
+        $content = [];
+
+        // A border at a known inset shows the printable area and any skew.
+        $content[] = sprintf(
+            "1.2 w 0.12 0.44 0.36 RG %.2f %.2f %.2f %.2f re S\n",
+            $margin,
+            $margin,
+            $width - ($margin * 2),
+            $height - ($margin * 2)
+        );
+
+        $y = $height - $margin - 40;
+        $content[] = self::pdfText($margin + 18, $y, 18, self::pdfEscape($title), true);
+        $y -= 28;
+
+        foreach ($lines as $line) {
+            $content[] = self::pdfText($margin + 18, $y, 11, self::pdfEscape((string) $line));
+            $y -= 18;
+        }
+
+        // A rule near the foot: if this is missing the page was truncated.
+        $content[] = sprintf(
+            "0.8 w 0.12 0.44 0.36 RG %.2f %.2f m %.2f %.2f l S\n",
+            $margin + 18,
+            $margin + 52,
+            $width - $margin - 18,
+            $margin + 52
+        );
+        $content[] = self::pdfText(
+            $margin + 18,
+            $margin + 32,
+            9,
+            self::pdfEscape('If you can read this line and see the border on all four sides, '
+                . 'this printer prints correctly.')
+        );
+
+        return self::assemblePdf([implode('', $content)], $width, $height, $title);
+    }
+
     private static function pdfText(float $x, float $y, float $size, string $text, bool $bold = false): string
     {
         return sprintf(

@@ -69,7 +69,12 @@ final class FileService
      * @param array{name:string,type:string,tmp_name:string,error:int,size:int} $upload
      * @return array{success:bool,file_id?:int,file?:array<string,mixed>,error?:string,warnings?:array<int,string>}
      */
-    public function store(array $upload, int $sessionId, int $locationId, bool $isRealUpload = true): array
+    /**
+     * @param int|null $sessionId The customer session this file belongs to,
+     *                            or null when nothing owns it - an operator's
+     *                            test page has no customer behind it.
+     */
+    public function store(array $upload, ?int $sessionId, int $locationId, bool $isRealUpload = true): array
     {
         $error = $this->checkUploadError($upload['error']);
         if ($error !== null) {
@@ -258,7 +263,7 @@ final class FileService
         $retentionHours = (int) Config::get('uploads.retention_hours', 24);
 
         $fileId = $this->files->create([
-            'session_id' => $sessionId,
+            'session_id' => ($sessionId ?? 0) > 0 ? $sessionId : null,
             'location_id' => $locationId,
             'original_name' => $this->displayName($upload['name']),
             'stored_name' => $storedName,

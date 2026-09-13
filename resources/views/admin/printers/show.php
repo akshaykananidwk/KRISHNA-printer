@@ -53,6 +53,10 @@ $valueLabels = [
     <button type="button" class="a-btn a-btn--ghost" id="probeCapabilitiesBtn" data-printer="<?= $printer->id() ?>">
       Probe capabilities
     </button>
+    <form method="post" action="/admin/printers/<?= $printer->id() ?>/test-print" style="display:inline">
+      <?= Csrf::field() ?>
+      <button type="submit" class="a-btn a-btn--ghost">Send test page</button>
+    </form>
     <a class="a-btn a-btn--ghost" href="/admin/printers/<?= $printer->id() ?>/edit">Edit</a>
   </div>
 </div>

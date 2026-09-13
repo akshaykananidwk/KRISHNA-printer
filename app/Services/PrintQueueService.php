@@ -295,6 +295,128 @@ final class PrintQueueService
         ]);
     }
 
+    /**
+     * Queue an operator test print.
+     *
+     * Deliberately not routed through createJob(). That path prices the work
+     * and checks the requested options against verified capabilities - both
+     * correct for a customer, both wrong here, because a test print is how a
+     * capability gets verified in the first place. A printer with nothing
+     * verified yet must still be able to print this page.
+     *
+     * Everything after creation is the ordinary pipeline: the same queue, the
+     * same agent, the same status reporting. That is the point - a test print
+     * that took a shortcut would prove nothing about real jobs.
+     *
+     * @return array{success:bool,job_number?:string,job_id?:int,error?:string}
+     */
+    public function createTestPrint(int $printerId, ?string $adminId, string $adminName): array
+    {
+        $printer = $this->printers->find($printerId);
+        if ($printer === null) {
+            return ['success' => false, 'error' => 'That printer is no longer available.'];
+        }
+
+        if (!$printer->bool('is_enabled')) {
+            return ['success' => false, 'error' => 'This printer is disabled. Enable it before testing.'];
+        }
+
+        $jobNumber = $this->generateJobNumber();
+        $locationId = $printer->int('location_id');
+
+        $pdf = \App\Support\Exporter::testPage('Krishna Printer test page', [
+            'Printer: ' . $printer->string('name') . ' (' . $printer->string('code') . ')',
+            'Queue: ' . ($printer->string('queue_name') ?: $printer->string('code')),
+            'Job number: ' . $jobNumber,
+            'Requested by: ' . $adminName,
+            'Sent: ' . gmdate('Y-m-d H:i:s') . ' UTC',
+        ]);
+
+        $temporary = tempnam(sys_get_temp_dir(), 'kpms-test-') ?: null;
+        if ($temporary === null || file_put_contents($temporary, $pdf) === false) {
+            return ['success' => false, 'error' => 'The test page could not be written to disk.'];
+        }
+
+        try {
+            $stored = $this->fileService->store(
+                [
+                    'name' => 'Test page ' . $jobNumber . '.pdf',
+                    'tmp_name' => $temporary,
+                    'size' => strlen($pdf),
+                    'error' => UPLOAD_ERR_OK,
+                    'type' => 'application/pdf',
+                ],
+                null,
+                $locationId,
+                false
+            );
+        } finally {
+            @unlink($temporary);
+        }
+
+        if (!($stored['success'] ?? false)) {
+            return ['success' => false, 'error' => (string) ($stored['error'] ?? 'The test page could not be stored.')];
+        }
+
+        $fileId = (int) $stored['file']['id'];
+
+        $jobId = $this->db->transaction(function () use ($jobNumber, $printer, $locationId, $fileId, $adminName): int {
+            $id = $this->jobs->create([
+                'job_number' => $jobNumber,
+                'batch_id' => bin2hex(random_bytes(16)),
+                'location_id' => $locationId,
+                'printer_id' => $printer->id(),
+                'file_id' => $fileId,
+                'session_id' => null,
+                'user_id' => null,
+
+                // The safest options there are, so the test exercises the
+                // transport rather than the printer's optional features.
+                'copies' => 1,
+                'color_mode' => 'bw',
+                'paper_size' => 'A4',
+                'orientation' => 'portrait',
+                'duplex' => 'single',
+                'page_range' => 'all',
+                'document_pages' => 1,
+                'selected_pages' => 1,
+                'billable_pages' => 1,
+                'sheets' => 1,
+
+                // A test print is never charged for.
+                'subtotal_paise' => 0,
+                'tax_paise' => 0,
+                'gateway_fee_paise' => 0,
+                'discount_paise' => 0,
+                'total_paise' => 0,
+                'currency' => (string) Config::get('settings.currency', 'INR'),
+                'price_breakdown' => json_encode([
+                    'test_print' => true,
+                    'requested_by' => $adminName,
+                ], JSON_UNESCAPED_SLASHES),
+
+                'payment_status' => 'not_required',
+                'status' => PrintJob::STATUS_PENDING,
+                'max_attempts' => (int) Config::get('printing.queue.max_attempts', 3),
+            ]);
+
+            $this->recordEvent(
+                $id,
+                null,
+                PrintJob::STATUS_PENDING,
+                'admin',
+                $adminId,
+                sprintf('Test print requested by %s.', $adminName)
+            );
+
+            return $id;
+        });
+
+        $this->markQueued($jobId, 'admin', $adminId, 'Test print queued.');
+
+        return ['success' => true, 'job_id' => $jobId, 'job_number' => $jobNumber];
+    }
+
     public function markQueued(int $jobId, string $actorType, ?string $actorId, string $message): bool
     {
         return $this->transition($jobId, PrintJob::STATUS_QUEUED, $actorType, $actorId, $message, [
