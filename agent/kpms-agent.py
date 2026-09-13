@@ -762,7 +762,7 @@ class Windows:
 
         # The document name is how the job is found in the spooler afterwards,
         # so it carries the job number.
-        args = [viewer, "-print-to", queue, "-silent", "-exit-when-done"]
+        args = [viewer, "-print-to", queue, "-silent"]
         if print_settings:
             args.extend(["-print-settings", ",".join(print_settings)])
         args.append(str(path))
@@ -773,6 +773,9 @@ class Windows:
             return False, "The printer did not accept the job within five minutes.", None
 
         if result.returncode != 0:
+            # Log what was actually run: a rejected command line is impossible
+            # to diagnose from the error text alone.
+            log.error("SumatraPDF rejected: %s", " ".join(args))
             return False, (
                 (result.stderr or result.stdout or "SumatraPDF could not print the file.").strip()[:400]
             ), None
@@ -866,6 +869,17 @@ def translate_options(options: list[str]) -> tuple[dict[str, str], list[str], st
     Turn the server's CUPS options into Windows queue settings and SumatraPDF
     print settings.
 
+    Paper size, colour and duplex go on the queue through
+    Set-PrintConfiguration, which is a documented Windows API. Only copies and
+    the page range are passed to SumatraPDF.
+
+    That split is deliberate. Sending paper, colour and duplex to SumatraPDF as
+    well got the whole command line rejected - "ParseFlags: argName:
+    '-print-settings'" - and nothing printed. Setting the same thing twice
+    through two mechanisms gains nothing and doubles the ways it can fail, so
+    each setting now travels by exactly one route, and the one that is a
+    documented API is preferred.
+
     Returns (queue_settings, print_settings, note). The note names anything
     that could not be carried, so the agent reports it rather than quietly
     printing something the customer did not ask for.
@@ -891,24 +905,19 @@ def translate_options(options: list[str]) -> tuple[dict[str, str], list[str], st
             size = PWG_TO_SIZE.get(value)
             if size:
                 queue_settings["paper"] = size
-                print_settings.append(f"paper={size}")
             else:
                 dropped.append(f"paper size {value}")
 
         elif key == "sides":
             if value == "two-sided-long-edge":
                 queue_settings["duplex"] = "TwoSidedLongEdge"
-                print_settings.append("duplexlong")
             elif value == "two-sided-short-edge":
                 queue_settings["duplex"] = "TwoSidedShortEdge"
-                print_settings.append("duplexshort")
             else:
                 queue_settings["duplex"] = "OneSided"
-                print_settings.append("simplex")
 
         elif key == "print-color-mode":
             queue_settings["color"] = "color" if value == "color" else "monochrome"
-            print_settings.append("color" if value == "color" else "monochrome")
 
         elif key == "page-ranges":
             print_settings.append(value)

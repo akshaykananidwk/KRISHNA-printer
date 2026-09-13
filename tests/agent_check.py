@@ -86,6 +86,21 @@ def main() -> int:
     check("the page range is passed through", "1-5" in settings, f"got {settings}")
     check("nothing is reported as dropped", note == "", f"got {note!r}")
 
+    # Each setting travels by exactly one route. Passing paper, colour and
+    # duplex to SumatraPDF as well got the whole command line rejected
+    # ("ParseFlags: argName: '-print-settings'") and nothing printed.
+    check("queue settings are not also sent to SumatraPDF",
+          settings == ["3x", "1-5"], f"got {settings}")
+
+    # The commonest job of all - one copy, every page - must produce no
+    # -print-settings argument at all.
+    _, plain, _ = agent.translate_options([
+        "copies=1", "media=iso_a4_210x297mm", "sides=one-sided",
+        "print-color-mode=monochrome", "orientation-requested=3", "ColorModel=Gray",
+    ])
+    check("a plain single-copy job passes no print settings",
+          plain == [], f"got {plain}")
+
     _, single, _ = agent.translate_options(["copies=1"])
     check("a single copy needs no multiplier", "1x" not in single, f"got {single}")
 
@@ -103,7 +118,7 @@ def main() -> int:
     check("colour and short-edge duplex translate",
           colour_queue.get("color") == "color"
           and colour_queue.get("duplex") == "TwoSidedShortEdge"
-          and "duplexshort" in colour_settings,
+          and colour_settings == [],
           f"got {colour_queue} {colour_settings}")
 
     # --- Printer state -----------------------------------------------------
