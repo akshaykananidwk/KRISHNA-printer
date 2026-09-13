@@ -111,6 +111,34 @@ if ($iscc -and (Test-Path $script)) {
     if ($LASTEXITCODE -eq 0 -and (Test-Path $setup)) {
         $setupSize = [math]::Round((Get-Item $setup).Length / 1MB, 1)
         Good "Built $setup ($setupSize MB)"
+
+        # Printed here because it is needed here, and because the alternative
+        # is somebody hashing a different copy of the file - an older build,
+        # or the one already on the web server - and publishing a checksum that
+        # will not match what agents download. The hash belongs to this exact
+        # file; rebuild and it changes.
+        $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLower()
+        Good ""
+        Good "  SHA-256:  $hash"
+        Write-Host ""
+        Write-Host "  Upload the file above to an https:// address, then put the version,"
+        Write-Host "  that address and this SHA-256 into the admin panel under"
+        Write-Host "  Settings -> Desktop software release. Every shop is then offered"
+        Write-Host "  version $appVersion the next time its software connects."
+        Write-Host ""
+        # Also left on disk and on the clipboard, so it does not have to be
+        # copied out of a console window by eye. Sixty-four characters typed
+        # by hand is sixty-four chances to publish a release nobody can install.
+        $hash | Set-Content -Path "$setup.sha256" -Encoding ascii
+        try {
+            $hash | Set-Clipboard
+            Write-Host "  The hash is on your clipboard, and saved as $OutputName" -NoNewline
+            Write-Host "Setup.exe.sha256"
+        }
+        catch {
+            Write-Host "  Saved beside the installer as KrishnaPrinterSetup.exe.sha256"
+        }
+        Write-Host ""
     }
     else {
         Warn "Inno Setup could not build the wizard. Run it by hand to see why:"

@@ -220,6 +220,7 @@ def main() -> int:
     bat = ROOT / "agent" / "desktop" / "build.bat"
     ps1 = ROOT / "agent" / "desktop" / "build.ps1"
     iss = ROOT / "agent" / "desktop" / "installer.iss"
+    ps1_text = ps1.read_text()
 
     check("there is a build file that can be double-clicked", bat.is_file())
     check("and a setup script for the wizard", iss.is_file())
@@ -234,6 +235,31 @@ def main() -> int:
     except UnicodeDecodeError:
         ascii_only = False
     check("build.bat is plain ASCII", ascii_only)
+
+    # build.ps1 has the same trap install.ps1 fell into: Windows PowerShell 5.1
+    # reads a BOM-less file as the machine's ANSI code page, and one smart
+    # quote pasted in from a document then acts as a string delimiter. The BOM
+    # is what makes it read the file as UTF-8; the ASCII body is what means it
+    # does not matter either way.
+    ps1_bytes = ps1.read_bytes()
+    has_bom = ps1_bytes[:3] == b"\xef\xbb\xbf"
+    try:
+        ps1_bytes[3:].decode("ascii")
+        ps1_ascii = True
+    except UnicodeDecodeError:
+        ps1_ascii = False
+    check("build.ps1 starts with a UTF-8 BOM", has_bom)
+    check("and is otherwise plain ASCII", ps1_ascii)
+
+    # The checksum an operator has to publish is printed by the build, because
+    # the alternative is hashing some other copy of the file - an older build,
+    # or the one already on the server - and publishing something that will not
+    # match what agents download.
+    check("the build prints the installer's SHA-256",
+          "Get-FileHash" in ps1_text and "SHA-256" in ps1_text,
+          "operators would have to work it out themselves")
+    check("and leaves it in a file beside the installer",
+          ".sha256" in ps1_text)
     check("build.bat uses CRLF line endings",
           b"\r\n" in bat_bytes and b"\n" not in bat_bytes.replace(b"\r\n", b""),
           "a .bat with bare LF can break goto and labels")
@@ -262,7 +288,6 @@ def main() -> int:
 
     # The packager list lives in build.ps1 alone. A second copy in build.bat
     # would drift, and the symptom of drift is an .exe that dies on launch.
-    ps1_text = ps1.read_text()
     check("the packager list is in one place only",
           "--hidden-import" not in bat_text and "--hidden-import" in ps1_text,
           "build.bat has its own copy of the hidden imports")
