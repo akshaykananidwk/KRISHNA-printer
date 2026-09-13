@@ -53,10 +53,13 @@ if ($KeepConsole) { $windowFlag = '--console' }
 # Belt and braces for the runtime-loaded agent. kpms_desktop.py imports
 # everything the agent needs so the analyser can see it, but naming them here
 # as well costs nothing and survives someone editing that list out.
+# ctypes.wintypes and winreg are imported inside functions - the tray icon and
+# the start-with-Windows setting - so they are the two most likely to be missed.
 $hidden = @(
-    'argparse', 'dataclasses', 'hashlib', 'json', 'logging', 'os', 'pathlib',
-    'platform', 're', 'shutil', 'signal', 'subprocess', 'tempfile', 'threading',
-    'time', 'typing', 'urllib.error', 'urllib.parse', 'urllib.request'
+    'argparse', 'ctypes', 'ctypes.wintypes', 'dataclasses', 'hashlib', 'json',
+    'logging', 'os', 'pathlib', 'platform', 'queue', 're', 'shutil', 'signal',
+    'subprocess', 'tempfile', 'threading', 'time', 'typing', 'urllib.error',
+    'urllib.parse', 'urllib.request', 'webbrowser', 'winreg'
 )
 $hiddenArgs = @()
 foreach ($module in $hidden) { $hiddenArgs += @('--hidden-import', $module) }

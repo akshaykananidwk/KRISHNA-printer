@@ -59,6 +59,7 @@ import urllib.request    # noqa: F401
 
 APP_NAME = "Krishna Printer"
 APP_VERSION = "1.0.0"
+AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 # --- Colours -------------------------------------------------------------
 # The same green as the web admin, so the two feel like one product.
@@ -166,6 +167,379 @@ def load_agent_module():
     )
 
 
+def autostart_supported() -> bool:
+    return os.name == "nt"
+
+
+def autostart_command() -> str:
+    """
+    The command Windows should run at logon.
+
+    Frozen by PyInstaller this is the executable itself; from a checkout it is
+    the interpreter and this script. Either way it starts hidden, straight
+    into the notification area, so logging in does not put a window in the
+    operator's way.
+    """
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}" --hidden'
+    return f'"{sys.executable}" "{Path(__file__).resolve()}" --hidden'
+
+
+def autostart_enabled() -> bool:
+    if not autostart_supported():
+        return False
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
+            value, _ = winreg.QueryValueEx(key, APP_NAME)
+            return bool(value)
+    except OSError:
+        return False
+
+
+def set_autostart(enabled: bool) -> str:
+    """
+    Turn starting-with-Windows on or off. Returns "" or why it could not.
+
+    HKEY_CURRENT_USER, not a service and not the machine-wide Run key: this
+    needs no Administrator, and it starts in the operator's own session, which
+    is the only session where their printers exist.
+    """
+    if not autostart_supported():
+        return "Starting with the system is only wired up for Windows."
+
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, AUTOSTART_KEY) as key:
+            if enabled:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, autostart_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
+        return ""
+    except OSError as error:
+        return f"Windows would not save the setting: {error}"
+
+
+class TrayIcon:
+    """
+    An icon in the Windows notification area, through ctypes alone.
+
+    Why by hand rather than a library: the whole application is standard
+    library, which is what lets the same file run as a script on a machine
+    with nothing installed and as a packaged executable on one with no Python
+    at all. A tray library would have been the only thing to break that.
+
+    The icon owns a thread with its own window and message loop, because that
+    is what Win32 requires. Nothing here touches Tk. Menu choices are put on
+    the queue the Tk thread already drains, which is the only safe way to
+    reach a widget from another thread.
+
+    Every failure path returns False rather than raising. An operator whose
+    notification area misbehaves should get an ordinary window, not a dead
+    application - see DesktopApp.hide_window, which minimises normally when
+    this is not running.
+    """
+
+    OPEN, START, STOP, QUIT = 1001, 1002, 1003, 1004
+
+    def __init__(self, title: str, actions: dict[int, Any], is_running) -> None:
+        self.title = title[:127]
+        self.actions = actions
+        self.is_running = is_running
+        self.thread: threading.Thread | None = None
+        self.ready = threading.Event()
+        self.hwnd = None
+        self.error = ""
+        self._data = None
+        self._shell32 = None
+
+    @staticmethod
+    def supported() -> bool:
+        return os.name == "nt"
+
+    def start(self) -> bool:
+        if not self.supported():
+            self.error = "The notification area is a Windows feature."
+            return False
+
+        self.thread = threading.Thread(target=self._serve, daemon=True, name="tray")
+        self.thread.start()
+        self.ready.wait(timeout=10)
+        return self.hwnd is not None
+
+    def stop(self) -> None:
+        if self.hwnd is None or self._user32 is None:
+            return
+        try:
+            # self._user32, not a fresh windll: this one has argtypes set, so
+            # the window handle survives the call on 64-bit Windows.
+            self._user32.PostMessageW(self.hwnd, 0x0010, 0, 0)      # WM_CLOSE
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    def notify(self, title: str, message: str) -> None:
+        """A balloon, used once to say where the window went."""
+        if self.hwnd is None or self._data is None:
+            return
+        try:
+            import ctypes
+
+            self._data.uFlags = 0x00000010                   # NIF_INFO
+            self._data.szInfo = message[:255]
+            self._data.szInfoTitle = title[:63]
+            self._data.dwInfoFlags = 0x00000001              # NIIF_INFO
+            self._shell32.Shell_NotifyIconW(0x00000001, ctypes.byref(self._data))  # NIM_MODIFY
+        except Exception:                                   # noqa: BLE001
+            pass
+
+    # -- everything below runs on the tray thread --------------------------
+
+    def _serve(self) -> None:
+        try:
+            self._build()
+        except Exception as error:                          # noqa: BLE001
+            self.error = f"{error.__class__.__name__}: {error}"
+            self.hwnd = None
+            self.ready.set()
+            return
+
+        self.ready.set()
+        self._pump()
+
+    def _build(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        shell32 = ctypes.windll.shell32
+        kernel32 = ctypes.windll.kernel32
+        self._shell32 = shell32
+
+        LRESULT = ctypes.c_ssize_t
+        WNDPROC = ctypes.WINFUNCTYPE(
+            LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        )
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        class NOTIFYICONDATA(ctypes.Structure):
+            _fields_ = [
+                ("cbSize", wintypes.DWORD),
+                ("hWnd", wintypes.HWND),
+                ("uID", wintypes.UINT),
+                ("uFlags", wintypes.UINT),
+                ("uCallbackMessage", wintypes.UINT),
+                ("hIcon", wintypes.HICON),
+                ("szTip", wintypes.WCHAR * 128),
+                ("dwState", wintypes.DWORD),
+                ("dwStateMask", wintypes.DWORD),
+                ("szInfo", wintypes.WCHAR * 256),
+                ("uVersion", wintypes.UINT),
+                ("szInfoTitle", wintypes.WCHAR * 64),
+                ("dwInfoFlags", wintypes.DWORD),
+                ("guidItem", ctypes.c_byte * 16),
+                ("hBalloonIcon", wintypes.HICON),
+            ]
+
+        # Every one of these returns or takes a handle. ctypes assumes c_int
+        # for anything it is not told about, which silently truncates a 64-bit
+        # handle to 32 bits - and 64-bit is what every Windows 10 machine is.
+        # The failure is not an error: the window is created and then every
+        # later call is given half a handle and quietly does nothing.
+        user32.DefWindowProcW.restype = LRESULT
+        user32.DefWindowProcW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        ]
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+        ]
+        user32.DestroyWindow.argtypes = [wintypes.HWND]
+        user32.PostMessageW.restype = wintypes.BOOL
+        user32.PostMessageW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        ]
+        user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+        user32.CreatePopupMenu.restype = wintypes.HMENU
+        user32.DestroyMenu.argtypes = [wintypes.HMENU]
+        user32.AppendMenuW.argtypes = [
+            wintypes.HMENU, wintypes.UINT, ctypes.c_size_t, wintypes.LPCWSTR
+        ]
+        user32.TrackPopupMenu.argtypes = [
+            wintypes.HMENU, wintypes.UINT, ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, wintypes.HWND, wintypes.LPVOID,
+        ]
+        user32.GetMessageW.argtypes = [wintypes.LPVOID, wintypes.HWND, wintypes.UINT, wintypes.UINT]
+        user32.GetMessageW.restype = ctypes.c_int
+
+        # Held on self: a WNDPROC that Python garbage-collects while Windows
+        # still holds the pointer crashes the process, and the crash happens
+        # minutes later somewhere unrelated.
+        self._proc = WNDPROC(self._dispatch)
+
+        # Set before the window exists, not after. CreateWindowExW delivers
+        # WM_NCCREATE and WM_CREATE synchronously, so _dispatch runs during
+        # the call below - and reading self._user32 there when it was assigned
+        # afterwards raises inside a ctypes callback, where the exception has
+        # nowhere to go.
+        self._user32 = user32
+        self._ctypes = ctypes
+        self._wintypes = wintypes
+
+        instance = kernel32.GetModuleHandleW(None)
+        # A class name unique to this process, so two copies do not collide.
+        self._class_name = f"KrishnaPrinterTray{os.getpid()}"
+
+        window_class = WNDCLASS()
+        window_class.lpfnWndProc = self._proc
+        window_class.hInstance = instance
+        window_class.lpszClassName = self._class_name
+        if not user32.RegisterClassW(ctypes.byref(window_class)):
+            raise OSError(f"RegisterClassW failed: {ctypes.get_last_error()}")
+        self._class = window_class          # also held against collection
+
+        hwnd = user32.CreateWindowExW(
+            0, self._class_name, self.title, 0, 0, 0, 0, 0, None, None, instance, None
+        )
+        if not hwnd:
+            raise OSError(f"CreateWindowExW failed: {ctypes.get_last_error()}")
+
+        data = NOTIFYICONDATA()
+        data.cbSize = ctypes.sizeof(NOTIFYICONDATA)
+        data.hWnd = hwnd
+        data.uID = 1
+        data.uFlags = 0x00000001 | 0x00000002 | 0x00000004   # MESSAGE | ICON | TIP
+        data.uCallbackMessage = 0x8001                        # WM_APP + 1
+        data.hIcon = self._icon(user32, shell32, instance)
+        data.szTip = self.title
+
+        if not shell32.Shell_NotifyIconW(0x00000000, ctypes.byref(data)):   # NIM_ADD
+            user32.DestroyWindow(hwnd)
+            raise OSError("Shell_NotifyIconW would not add the icon.")
+
+        self._data = data
+        self.hwnd = hwnd
+
+    def _icon(self, user32, shell32, instance):
+        """The application's own icon where there is one, else the generic one."""
+        try:
+            import ctypes
+
+            shell32.ExtractIconW.restype = ctypes.c_void_p
+            handle = shell32.ExtractIconW(instance, sys.executable, 0)
+            if handle and handle > 1:
+                return handle
+        except Exception:                                   # noqa: BLE001
+            pass
+        user32.LoadIconW.restype = ctypes.c_void_p
+        return user32.LoadIconW(None, 32512)                # IDI_APPLICATION
+
+    def _dispatch(self, hwnd, message, wparam, lparam):
+        user32 = self._user32
+
+        if message == 0x8001:                               # our callback
+            event = lparam & 0xFFFF
+            if event == 0x0203:                             # WM_LBUTTONDBLCLK
+                self._fire(self.OPEN)
+            elif event in (0x0205, 0x0207):                 # WM_RBUTTONUP, WM_MBUTTONDOWN
+                self._menu(hwnd)
+            return 0
+
+        if message == 0x0111:                               # WM_COMMAND
+            self._fire(wparam & 0xFFFF)
+            return 0
+
+        if message == 0x0002:                               # WM_DESTROY
+            try:
+                self._shell32.Shell_NotifyIconW(0x00000002, self._ctypes.byref(self._data))
+            except Exception:                               # noqa: BLE001
+                pass
+            user32.PostQuitMessage(0)
+            return 0
+
+        return user32.DefWindowProcW(hwnd, message, wparam, lparam)
+
+    def _menu(self, hwnd) -> None:
+        ctypes = self._ctypes
+        user32 = self._user32
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        running = False
+        try:
+            running = bool(self.is_running())
+        except Exception:                                   # noqa: BLE001
+            pass
+
+        MF_STRING, MF_GRAYED, MF_SEPARATOR = 0x0000, 0x0001, 0x0800
+        menu = user32.CreatePopupMenu()
+        user32.AppendMenuW(menu, MF_STRING, self.OPEN, "Open Krishna Printer")
+        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        user32.AppendMenuW(menu, MF_STRING | (MF_GRAYED if running else 0),
+                           self.START, "Start printing")
+        user32.AppendMenuW(menu, MF_STRING | (0 if running else MF_GRAYED),
+                           self.STOP, "Stop printing")
+        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        user32.AppendMenuW(menu, MF_STRING, self.QUIT, "Quit")
+
+        point = POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+
+        # Without this the menu never closes when the mouse goes elsewhere -
+        # a documented Win32 quirk, and the reason for the empty message after.
+        user32.SetForegroundWindow(hwnd)
+        user32.TrackPopupMenu(menu, 0x0002 | 0x0020,        # RIGHTBUTTON | BOTTOMALIGN
+                              point.x, point.y, 0, hwnd, None)
+        user32.PostMessageW(hwnd, 0x0000, 0, 0)             # WM_NULL
+        user32.DestroyMenu(menu)
+
+    def _fire(self, command: int) -> None:
+        action = self.actions.get(command)
+        if action is not None:
+            action()
+
+    def _pump(self) -> None:
+        ctypes = self._ctypes
+        wintypes = self._wintypes
+        user32 = self._user32
+
+        class MSG(ctypes.Structure):
+            _fields_ = [
+                ("hWnd", wintypes.HWND), ("message", wintypes.UINT),
+                ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                ("time", wintypes.DWORD),
+                ("pt_x", ctypes.c_long), ("pt_y", ctypes.c_long),
+            ]
+
+        message = MSG()
+        while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(message))
+            user32.DispatchMessageW(ctypes.byref(message))
+        self.hwnd = None
+
+
 class LogPipe:
     """Collect the agent's log records for display, without blocking it."""
 
@@ -195,8 +569,9 @@ class LogPipe:
 
 
 class DesktopApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, start_hidden: bool = False) -> None:
         self.root = root
+        self.start_hidden = start_hidden
         self.agent_module = load_agent_module()
         self.log_pipe = LogPipe()
         self.ui_queue: queue.Queue = queue.Queue()
@@ -214,14 +589,105 @@ class DesktopApp:
         self.agent_thread: threading.Thread | None = None
         self.agent_instance = None
 
+        self.tray: TrayIcon | None = None
+        self.hidden = False
+        self.explained_tray = False
+        self.quitting = False
+
         self._build()
         self._poll_log()
+        self._start_tray()
 
         # A token already on disk means this machine has been set up before.
-        if self.settings.get("token") and self.settings.get("server"):
+        configured = bool(self.settings.get("token") and self.settings.get("server"))
+        if configured:
             self.server_var.set(self.settings["server"])
             self.token_var.set(self.settings["token"])
             self.root.after(300, self.connect)
+
+        # Launched by Windows at logon: go straight to the notification area
+        # and start printing. Nobody asked for a window, they logged in.
+        if self.start_hidden and configured:
+            self.autostarting = True
+            self.root.after(100, self.hide_window)
+        else:
+            self.autostarting = False
+
+    # -- notification area -------------------------------------------------
+
+    def _start_tray(self) -> None:
+        if not TrayIcon.supported():
+            return
+
+        def queued(action):
+            return lambda: self.ui_queue.put(action)
+
+        tray = TrayIcon(
+            f"{APP_NAME} - print agent",
+            {
+                TrayIcon.OPEN: queued(self.show_window),
+                TrayIcon.START: queued(self.start_agent),
+                TrayIcon.STOP: queued(self.stop_agent),
+                TrayIcon.QUIT: queued(self.quit_app),
+            },
+            is_running=lambda: self.agent_thread is not None and self.agent_thread.is_alive(),
+        )
+        if tray.start():
+            self.tray = tray
+        else:
+            # Not fatal: without it, minimise means minimise.
+            self._append_log(f"The notification area is unavailable ({tray.error}). "
+                             "The window will minimise to the taskbar instead.")
+
+    def hide_window(self) -> None:
+        """
+        Out of the way, still printing.
+
+        With a tray icon the window is withdrawn completely, which is what
+        "run in the background" means on Windows. Without one it is only
+        iconified, because a withdrawn window with nothing to restore it from
+        is an application the operator cannot get back.
+        """
+        if self.tray is None:
+            self.root.iconify()
+            return
+
+        self.root.withdraw()
+        self.hidden = True
+
+        if not self.explained_tray:
+            self.explained_tray = True
+            self.tray.notify(
+                APP_NAME,
+                "Still here, near the clock. Printing carries on. "
+                "Double-click the icon to open this window again.",
+            )
+
+    def show_window(self) -> None:
+        self.hidden = False
+        self.root.deiconify()
+        self.root.state("normal")
+        self.root.lift()
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+
+    def _on_unmap(self, event) -> None:
+        """Minimise means hide, when there is somewhere to hide to."""
+        if event.widget is not self.root or self.tray is None or self.hidden:
+            return
+        if self.root.state() == "iconic":
+            self.hide_window()
+
+    def quit_app(self) -> None:
+        """Leave for real, from the tray menu or from the Quit button."""
+        if self.agent_instance is not None:
+            self.agent_instance.stop()
+        self.quitting = True
+        if self.tray is not None:
+            self.tray.stop()
+        self.root.destroy()
 
     # -- configuration ----------------------------------------------------
 
@@ -303,6 +769,8 @@ class DesktopApp:
                         borderwidth=0, focusthickness=0, padding=(14, 7))
         style.map("Accent.TButton", background=[("active", "#17594a"), ("disabled", "#9bb5ac")])
         style.configure("TButton", padding=(12, 6))
+        style.configure("Card.TCheckbutton", background="white", foreground=INK)
+        style.map("Card.TCheckbutton", background=[("active", "white")])
         style.configure("Treeview", rowheight=26, fieldbackground="white", background="white")
         style.configure("Treeview.Heading", font=(base.cget("family"), 9, "bold"))
 
@@ -378,6 +846,45 @@ class DesktopApp:
         self.start_btn.pack(side="left")
         self.stop_btn = ttk.Button(row, text="Stop", command=self.stop_agent, state="disabled")
         self.stop_btn.pack(side="left", padx=8)
+        ttk.Button(row, text="Hide", command=self.hide_window).pack(side="left", padx=8)
+        ttk.Button(row, text="Quit", command=self.quit_app).pack(side="right")
+
+        background = self._card(tab)
+        ttk.Label(background, text="Running in the background",
+                  font=self.head_font, style="Card.TLabel").pack(anchor="w")
+        ttk.Label(background, style="Muted.TLabel", wraplength=760, justify="left",
+                  text="Closing or minimising this window puts it beside the clock and keeps "
+                       "printing. Right-click that icon to start, stop or quit. Quit is the "
+                       "only thing that stops collecting jobs."
+                  ).pack(anchor="w", pady=(4, 12))
+
+        self.autostart_var = tk.BooleanVar(value=autostart_enabled())
+        self.autostart_box = ttk.Checkbutton(
+            background, text="Start automatically when I log in to this computer",
+            variable=self.autostart_var, command=self._toggle_autostart, style="Card.TCheckbutton",
+        )
+        self.autostart_box.pack(anchor="w")
+        self.autostart_message = ttk.Label(background, style="Muted.TLabel",
+                                           wraplength=760, justify="left", text="")
+        self.autostart_message.pack(anchor="w", pady=(6, 0))
+
+        if not autostart_supported():
+            self.autostart_box.configure(state="disabled")
+            self.autostart_message.configure(
+                text="On Linux the installer registers a systemd service instead.")
+
+    def _toggle_autostart(self) -> None:
+        wanted = bool(self.autostart_var.get())
+        problem = set_autostart(wanted)
+        if problem:
+            self.autostart_var.set(autostart_enabled())
+            self.autostart_message.configure(text=problem, foreground=DANGER)
+            return
+        self.autostart_message.configure(
+            text=("It will start hidden next time you log in, and begin printing on its own."
+                  if wanted else "It will not start on its own."),
+            foreground=MUTED,
+        )
 
     def _build_printers_tab(self) -> None:
         tab = ttk.Frame(self.tabs, padding=16)
@@ -597,6 +1104,16 @@ class DesktopApp:
             self.profile_var.set(labels[-1] if "Generic" in labels[-1] else labels[0])
 
         self.refresh_printers()
+
+        # Started by Windows at logon, with a printer already assigned: begin
+        # printing without waiting to be told. Anything else would mean jobs
+        # sitting in the queue until somebody noticed the icon.
+        if self.autostarting:
+            self.autostarting = False
+            if self.registered:
+                self.start_agent()
+            return
+
         self.tabs.select(1)
 
     def refresh_printers(self) -> None:
@@ -738,26 +1255,42 @@ class DesktopApp:
         self._set_status("Stopped", MUTED)
 
     def on_close(self) -> None:
+        """
+        The X button.
+
+        With a notification-area icon this hides the window and leaves the
+        agent printing - which is what a shop wants from the thing that runs
+        its printer, and what closing does to every other background
+        application on Windows. Quit, in the tray menu, is how you actually
+        stop it. Without an icon there is nowhere to hide to, so X still means
+        close, and it still asks first when a job could be lost.
+        """
+        if self.tray is not None:
+            self.hide_window()
+            return
+
         if self.agent_thread is not None and self.agent_thread.is_alive():
             if not messagebox.askokcancel(
                 APP_NAME,
                 "The printing service is running. Close anyway? Jobs will stop being collected.",
             ):
                 return
-            if self.agent_instance is not None:
-                self.agent_instance.stop()
-        self.root.destroy()
+        self.quit_app()
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    arguments = sys.argv[1:] if argv is None else argv
+    start_hidden = "--hidden" in arguments or "--tray" in arguments
+
     root = tk.Tk()
     try:
-        app = DesktopApp(root)
+        app = DesktopApp(root, start_hidden=start_hidden)
     except Exception as error:                              # noqa: BLE001
         messagebox.showerror(APP_NAME, f"{APP_NAME} could not start:\n\n{error}")
         return 1
 
     root.protocol("WM_DELETE_WINDOW", app.on_close)
+    root.bind("<Unmap>", app._on_unmap)
     root.mainloop()
     return 0
 

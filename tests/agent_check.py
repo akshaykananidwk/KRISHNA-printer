@@ -413,6 +413,74 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
+    # --- No window flashes on the counter PC -------------------------------
+    print("Windows console suppression")
+
+    import types
+
+    # Nothing may call subprocess.run directly: on Windows that is a console
+    # window appearing over whatever the operator is doing, several times a
+    # minute, for as long as the agent is up.
+    source = AGENT.read_text()
+    direct = [
+        (number, line.strip())
+        for number, line in enumerate(source.splitlines(), 1)
+        if "subprocess.run(" in line and not line.lstrip().startswith("#")
+    ]
+    check("subprocess.run is called in exactly one place",
+          len(direct) == 1, "; ".join(f"line {n}: {t}" for n, t in direct))
+
+    saved_os = agent.os
+    saved_subprocess = agent.subprocess
+    calls: list[dict] = []
+
+    class FakeStartupInfo:
+        def __init__(self) -> None:
+            self.dwFlags = 0
+            self.wShowWindow = None
+
+    fake_subprocess = types.SimpleNamespace(
+        run=lambda args, **kwargs: calls.append(kwargs) or "ran",
+        STARTUPINFO=FakeStartupInfo,
+        STARTF_USESHOWWINDOW=1,
+        SW_HIDE=0,
+        CREATE_NO_WINDOW=0x08000000,
+    )
+
+    try:
+        agent.os = types.SimpleNamespace(name="nt")
+        agent.subprocess = fake_subprocess
+        agent.CREATE_NO_WINDOW = 0x08000000
+        agent.run_quiet(["powershell", "-Command", "Get-Printer"], timeout=30)
+    finally:
+        agent.os = saved_os
+        agent.subprocess = saved_subprocess
+        agent.CREATE_NO_WINDOW = getattr(saved_subprocess, "CREATE_NO_WINDOW", 0)
+
+    passed = calls[0] if calls else {}
+    check("on Windows it asks for no console window",
+          passed.get("creationflags") == 0x08000000, f"got {passed.get('creationflags')}")
+    check("and hides a window the program asks for itself",
+          getattr(passed.get("startupinfo"), "wShowWindow", None) == 0
+          and getattr(passed.get("startupinfo"), "dwFlags", 0) & 1 == 1,
+          f"got {passed.get('startupinfo')}")
+    check("output is still captured, which the agent reads",
+          passed.get("capture_output") is True and passed.get("text") is True,
+          f"got {passed}")
+
+    # On Linux the flag does not exist and must not be invented.
+    calls.clear()
+    saved_subprocess = agent.subprocess
+    try:
+        agent.subprocess = fake_subprocess
+        agent.run_quiet(["lpstat", "-e"])
+    finally:
+        agent.subprocess = saved_subprocess
+
+    check("on Linux no Windows-only argument is passed",
+          "creationflags" not in calls[0] and "startupinfo" not in calls[0],
+          f"got {calls[0]}")
+
     # --- Running inside the desktop window ---------------------------------
     print("Running on a worker thread")
 

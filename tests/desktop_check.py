@@ -177,6 +177,75 @@ def main() -> int:
     check("printing cannot be started before connecting",
           str(app.start_btn.cget("state")) == "disabled")
 
+    print("Running in the background")
+
+    # Off Windows there is no notification area, and the app must say so
+    # rather than raise. On Windows a failure to create the icon is equally
+    # survivable - see the fallback checked two blocks down.
+    check("the notification area is known to be Windows-only",
+          desktop.TrayIcon.supported() == (os.name == "nt"))
+
+    lonely = desktop.TrayIcon("probe", {}, is_running=lambda: False)
+    if os.name != "nt":
+        check("starting one here fails without raising", lonely.start() is False)
+        check("and gives a reason", "Windows" in lonely.error, f"got {lonely.error!r}")
+
+    # No icon: minimise must not withdraw the window. A withdrawn window with
+    # nothing to restore it from is an application the operator cannot reach.
+    states: list[str] = []
+    app.tray = None
+    app.root.iconify = lambda: states.append("iconified")
+    app.root.withdraw = lambda: states.append("withdrawn")
+    app.hide_window()
+    check("without a tray icon, hiding only minimises",
+          states == ["iconified"], f"got {states}")
+
+    # With one, it goes away completely, says where it went, and says it once.
+    class StubTray:
+        def __init__(self) -> None:
+            self.balloons: list[tuple[str, str]] = []
+            self.stopped = False
+
+        def notify(self, title, message):
+            self.balloons.append((title, message))
+
+        def stop(self):
+            self.stopped = True
+
+    stub = StubTray()
+    app.tray = stub
+    states.clear()
+    app.hide_window()
+    app.hide_window()
+    check("with one, the window is withdrawn", states == ["withdrawn", "withdrawn"], f"got {states}")
+    check("and the operator is told where it went once",
+          len(stub.balloons) == 1 and "clock" in stub.balloons[0][1], f"got {stub.balloons}")
+    check("printing is not stopped by hiding", app.agent_instance is None)
+
+    # Closing the window with an icon present means hide, not quit.
+    destroyed: list[bool] = []
+    app.root.destroy = lambda: destroyed.append(True)
+    states.clear()
+    app.on_close()
+    check("closing the window hides it instead of quitting",
+          states == ["withdrawn"] and not destroyed, f"hide={states} destroyed={destroyed}")
+
+    # Quit is the one thing that ends it, and it takes the icon with it.
+    app.quit_app()
+    check("Quit really quits", destroyed == [True])
+    check("and removes the icon", stub.stopped)
+
+    print("Starting with Windows")
+    command = desktop.autostart_command()
+    check("the logon command starts hidden", command.endswith("--hidden"), f"got {command}")
+    check("and quotes the path, which has spaces on a normal install",
+          command.startswith('"'), f"got {command}")
+    check("it is only read as enabled on Windows",
+          desktop.autostart_enabled() is False or os.name == "nt")
+    if os.name != "nt":
+        check("and setting it elsewhere reports why, rather than raising",
+              "Windows" in desktop.set_autostart(True))
+
     print("Refusals")
     check("https is accepted", desktop.is_safe_server("https://print.example.com"))
     check("loopback is accepted for a local trial",

@@ -92,6 +92,44 @@ PWG_TO_SIZE = {
 log = logging.getLogger("kpms-agent")
 
 
+# Windows gives every console program it starts a console window of its own,
+# even when the parent has none. The agent runs PowerShell several times a
+# minute to read the queue, so on a counter PC a black box appeared and
+# vanished over whatever the operator was doing, all day. CREATE_NO_WINDOW
+# stops the window being made at all; the hidden STARTUPINFO covers the
+# handful of programs that ask for a window themselves. Neither exists on
+# Linux, where run_quiet is a plain subprocess.run.
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def hidden_startupinfo():
+    """A STARTUPINFO that asks for no window, or None off Windows."""
+    if os.name != "nt":
+        return None
+    info = subprocess.STARTUPINFO()
+    info.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    info.wShowWindow = subprocess.SW_HIDE
+    return info
+
+
+def run_quiet(args, **kwargs) -> subprocess.CompletedProcess:
+    """
+    subprocess.run that never flashes a window.
+
+    Every external program the agent starts goes through here. Capturing the
+    output is the default because the agent reads it, and because output left
+    to inherit the parent's handles is what makes Windows want a console in
+    the first place.
+    """
+    kwargs.setdefault("capture_output", True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("check", False)
+    if os.name == "nt":
+        kwargs["creationflags"] = kwargs.get("creationflags", 0) | CREATE_NO_WINDOW
+        kwargs.setdefault("startupinfo", hidden_startupinfo())
+    return subprocess.run(args, **kwargs)
+
+
 @dataclass
 class Config:
     server: str
@@ -228,7 +266,7 @@ class Cups:
 
     @staticmethod
     def _run(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
-        return subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        return run_quiet(args, timeout=timeout)
 
     @classmethod
     def local_printers(cls) -> list[str]:
@@ -479,7 +517,7 @@ class Converter:
         profile.mkdir(parents=True, exist_ok=True)
 
         try:
-            result = subprocess.run(
+            result = run_quiet(
                 [
                     binary,
                     "--headless",
@@ -490,10 +528,7 @@ class Converter:
                     "--outdir", str(output_dir),
                     str(source),
                 ],
-                capture_output=True,
-                text=True,
                 timeout=300,
-                check=False,
             )
         except subprocess.TimeoutExpired:
             return None, "Converting the document to PDF timed out."
@@ -509,9 +544,7 @@ class Converter:
         """Exact page count after conversion, used to report what was printed."""
         if shutil.which("pdfinfo") is None:
             return None
-        result = subprocess.run(
-            ["pdfinfo", str(path)], capture_output=True, text=True, timeout=30, check=False
-        )
+        result = run_quiet(["pdfinfo", str(path)], timeout=30)
         if result.returncode != 0:
             return None
         match = re.search(r"^Pages:\s*(\d+)", result.stdout, re.MULTILINE)
@@ -584,9 +617,9 @@ class Windows:
     @classmethod
     def _ps(cls, script: str, timeout: int = 30) -> subprocess.CompletedProcess:
         shell = cls._powershell()
-        return subprocess.run(
+        return run_quiet(
             [shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
-            capture_output=True, text=True, timeout=timeout, check=False,
+            timeout=timeout,
         )
 
     @staticmethod
@@ -793,7 +826,7 @@ class Windows:
         before = cls._queue_job_ids(queue) or set()
 
         try:
-            result = subprocess.run(args, capture_output=True, text=True, timeout=300, check=False)
+            result = run_quiet(args, timeout=300)
         except subprocess.TimeoutExpired:
             return False, "The printer did not accept the job within five minutes.", None
 
