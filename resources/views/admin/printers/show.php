@@ -152,7 +152,14 @@ $valueLabels = [
             <?= (int) $connection['use_tls'] === 1 && (int) $connection['verify_tls'] === 0
                 ? ' <span class="a-badge a-badge--warning">certificate not verified</span>' : '' ?>
           <?php elseif ((string) $connection['driver'] === 'agent'): ?>
-            via the location print agent<?= $printer->string('queue_name') !== ''
+            <?php if ($device !== null): ?>
+              via agent <strong><?= View::e((string) $device['name']) ?></strong>
+              (<?= View::e((string) $device['status']) ?>)
+            <?php else: ?>
+              <span class="a-badge a-badge--warning">no agent assigned</span>
+              — nothing will collect jobs for this printer until one is chosen in Edit
+            <?php endif; ?>
+            <?= $printer->string('queue_name') !== ''
                 ? ' → queue ' . View::e($printer->string('queue_name')) : '' ?>
           <?php endif; ?>
         </p>

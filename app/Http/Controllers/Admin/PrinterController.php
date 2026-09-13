@@ -132,6 +132,13 @@ final class PrinterController extends Controller
             'printer' => $printer,
             'location' => $location,
             'connections' => $this->printers->connections($printer->id(), false),
+            // Which agent drives this printer, by name. Without it the page
+            // says only "via the location print agent", and an estate with
+            // more than one agent gives no way to see that a printer is
+            // pointed at the wrong one.
+            'device' => $printer->get('device_id') === null
+                ? null
+                : $this->devices->find($printer->int('device_id')),
             'capabilityMatrix' => $this->capabilities->adminMatrix($printer),
             'customerOptions' => $this->capabilities->customerOptions($printer),
             'profile' => $printer->profile(),
