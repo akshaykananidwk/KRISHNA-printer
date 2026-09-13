@@ -375,6 +375,30 @@ final class PrintJobRepository extends Repository
         );
     }
 
+    /**
+     * Today's work at one location, for the shop owner's own screen.
+     *
+     * Cancelled jobs are counted as jobs but contribute no pages: the shop
+     * took the order, and no paper came out of it.
+     *
+     * @return array{jobs:int,pages:int}
+     */
+    public function todayTotalsForLocation(int $locationId): array
+    {
+        $row = $this->db->selectOne(
+            "SELECT COUNT(*) AS jobs,
+                    COALESCE(SUM(CASE WHEN status = 'completed' THEN billable_pages ELSE 0 END), 0) AS pages
+             FROM print_jobs
+             WHERE location_id = ? AND created_at >= UTC_DATE()",
+            [$locationId]
+        );
+
+        return [
+            'jobs' => (int) ($row['jobs'] ?? 0),
+            'pages' => (int) ($row['pages'] ?? 0),
+        ];
+    }
+
     public function queueDepth(int $printerId): int
     {
         return (int) $this->db->scalar(

@@ -8,8 +8,7 @@ use App\Core\View;
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="robots" content="noindex, nofollow">
-<title>Sign in · <?= View::e($appName) ?></title>
+<title>Shop sign in · <?= View::e($appName) ?></title>
 <link rel="stylesheet" href="/assets/css/admin.css">
 <style nonce="<?= View::e($cspNonce) ?>">
   .l-wrap { min-height: 100vh; display: grid; place-items: center; padding: 1.5rem; }
@@ -28,21 +27,20 @@ use App\Core\View;
     <div class="l-brand">
       <span class="l-brand__mark" aria-hidden="true">🖨️</span>
       <div class="l-brand__name"><?= View::e($appName) ?></div>
-      <div class="l-brand__sub">Management panel</div>
+      <div class="l-brand__sub">Shop sign in</div>
     </div>
 
     <?php foreach ($flashes as $flash): ?>
       <div class="a-flash a-flash--<?= View::e($flash['type']) ?>"><?= View::e($flash['message']) ?></div>
     <?php endforeach; ?>
 
-    <form method="post" action="/admin/login" autocomplete="on">
+    <form method="post" action="/partner/login" autocomplete="on">
       <?= Csrf::field() ?>
 
       <div class="a-field">
         <label class="a-field__label" for="email">Email address</label>
         <input class="a-input" type="email" id="email" name="email" required autofocus
-               autocomplete="username" inputmode="email"
-               value="<?= View::e($email) ?>">
+               autocomplete="username" inputmode="email" value="<?= View::e($email) ?>">
       </div>
 
       <div class="a-field">
@@ -51,16 +49,11 @@ use App\Core\View;
                autocomplete="current-password">
       </div>
 
-      <label class="a-check">
-        <input type="checkbox" name="remember" value="1">
-        <span>Keep me signed in on this device</span>
-      </label>
-
       <button type="submit" class="a-btn a-btn--primary" style="width:100%">Sign in</button>
     </form>
 
     <p class="l-foot">
-      Running a shop and want to join? <a href="/register">Register your shop</a>
+      New here? <a href="/register">Register your shop</a>
     </p>
   </main>
 </div>

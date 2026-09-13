@@ -43,6 +43,9 @@ final class RoleMiddleware implements MiddlewareInterface
         '/admin/users' => 'settings.manage',
         '/admin/devices' => 'printers.manage',
         '/admin/tokens' => 'settings.manage',
+        // Approving a registration creates a location and a print agent, so it
+        // needs the permission that creating a location needs, not a weaker one.
+        '/admin/registrations' => 'locations.manage',
     ];
 
     /** Path suffixes that always require a write permission on their section. */

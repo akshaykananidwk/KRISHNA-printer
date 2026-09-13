@@ -147,6 +147,24 @@ final class ApiTokenRepository extends Repository
         );
     }
 
+    /**
+     * Revoke every live token for one device.
+     *
+     * Used when a shop issues itself a replacement token: whoever asks for a
+     * new one has lost track of the old one, and a bearer token nobody can
+     * account for is a key under a mat nobody can find. No grace window here,
+     * unlike rotation — the point is that the previous token stops working.
+     */
+    public function revokeForDevice(int $deviceId): int
+    {
+        return $this->db->execute(
+            'UPDATE api_tokens
+             SET revoked_at = UTC_TIMESTAMP(), grace_until = NULL
+             WHERE device_id = ? AND revoked_at IS NULL',
+            [$deviceId]
+        );
+    }
+
     /** @return array<int,array<string,mixed>> */
     public function all(): array
     {

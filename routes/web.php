@@ -17,6 +17,7 @@ use App\Http\Controllers\Admin;
 use App\Http\Controllers\Api;
 use App\Http\Controllers\Customer;
 use App\Http\Controllers\InstallController;
+use App\Http\Controllers\PartnerController;
 
 // ---------------------------------------------------------------------
 // Installer — only reachable before installation (InstallGuardMiddleware)
@@ -86,6 +87,26 @@ $router->group(['middleware' => ['install_guard', 'maintenance', 'https', 'sessi
 });
 
 // ---------------------------------------------------------------------
+// Shop self-registration and the shop owner's own area
+//
+// Public, so rate-limited and CSRF-protected like the customer flow. These
+// pages create a registration and nothing else: a location and a print agent
+// appear only when an operator approves it in /admin/registrations.
+// ---------------------------------------------------------------------
+$router->group(['middleware' => ['install_guard', 'maintenance', 'https', 'session', 'security_headers', 'rate_limit']], function ($router): void {
+    $router->get('/register', PartnerController::class . '@showRegister')->name('register');
+    $router->get('/partner/login', PartnerController::class . '@showLogin')->name('partner.login');
+    $router->get('/partner', PartnerController::class . '@dashboard')->name('partner.dashboard');
+
+    $router->group(['middleware' => ['csrf']], function ($router): void {
+        $router->post('/register', PartnerController::class . '@register');
+        $router->post('/partner/login', PartnerController::class . '@login');
+        $router->post('/partner/logout', PartnerController::class . '@logout');
+        $router->post('/partner/token', PartnerController::class . '@issueToken');
+    });
+});
+
+// ---------------------------------------------------------------------
 // Admin — authentication
 // ---------------------------------------------------------------------
 $router->group(['prefix' => '/admin', 'middleware' => ['install_guard', 'https', 'session', 'security_headers', 'rate_limit']], function ($router): void {
@@ -145,6 +166,15 @@ $router->group([
             $router->post('/printers/{id:\d+}/toggle', Admin\PrinterController::class . '@toggle');
             $router->post('/printers/{id:\d+}/maintenance', Admin\PrinterController::class . '@setMaintenance');
             $router->post('/printers/{id:\d+}/default', Admin\PrinterController::class . '@makeDefault');
+        });
+
+        // --- Shop registrations -------------------------------------------
+        $router->get('/registrations', Admin\RegistrationController::class . '@index')->name('admin.registrations');
+
+        $router->group(['middleware' => ['csrf']], function ($router): void {
+            $router->post('/registrations/{id:\d+}/approve', Admin\RegistrationController::class . '@approve');
+            $router->post('/registrations/{id:\d+}/reject', Admin\RegistrationController::class . '@reject');
+            $router->post('/registrations/{id:\d+}/suspend', Admin\RegistrationController::class . '@suspend');
         });
 
         // --- Print agents ------------------------------------------------

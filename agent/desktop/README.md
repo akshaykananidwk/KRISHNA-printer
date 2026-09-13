@@ -15,9 +15,37 @@ would be a second set of bugs.
 
 | Tab | What it does |
 |---|---|
-| **Connection** | Server address and token. Connect, then start or stop printing. |
+| **Connection** | Server address and token. Connect, start or stop printing, and the background settings. |
 | **Printers** | Every printer installed on this computer, what its driver reports, and a button to add one to the shop. |
 | **Activity** | What the agent is doing, live. |
+
+## Where the token comes from
+
+Either place issues one:
+
+- **The shop itself**, at `/partner` after registering at `/register` and being
+  approved — one button, shown on that page load only.
+- **An operator**, in the admin panel under **Print agents**.
+
+Issuing a replacement retires the previous token immediately, which is the
+point: a token nobody can account for should not keep working.
+
+## Running in the background
+
+Closing or minimising the window puts it in the notification area, beside the
+clock, and printing carries on. Right-click that icon to open the window, start
+or stop printing, or quit — quitting is the only thing that stops collecting
+jobs.
+
+**Start automatically when I log in** on the Connection tab writes the per-user
+`Run` key. No Administrator, and it starts in the operator's own session, which
+is the only session their printers exist in. It comes up hidden and starts
+printing on its own when a printer is already assigned.
+
+Nothing flashes while it works: every program the agent starts — PowerShell to
+read the queue, LibreOffice to convert, SumatraPDF to print — is started with
+no console window. Without that, a black box appeared over whatever the
+operator was doing, several times a minute, all day.
 
 ## Running it
 

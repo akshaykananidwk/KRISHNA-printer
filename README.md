@@ -25,9 +25,25 @@ no Composer, no build step. It deploys by uploading files and opening `/install`
 6. Pay, if the shop has payment enabled.
 7. Get a job number — `Print Job #AK102548 created successfully.`
 
+**For a shop joining the network** — self-service, at `/register`:
+
+1. The owner fills in one form: shop, contact, address, password.
+2. An operator sees it in **Registrations** and approves it. That approval —
+   and nothing on the public form — creates the shop's location and its print
+   agent, in one transaction.
+3. The owner signs in at `/partner`, presses one button and gets their agent
+   token, shown on that page load only. Nobody reads a credential down a phone.
+4. They paste it into the desktop app, pick their printer, and they are live.
+
+Losing the token is not a problem: issuing a replacement is one button, and the
+one it replaces stops working immediately.
+
 **For the operator:**
 
 - Dashboard with live counters and charts across the whole estate.
+- Registrations: the queue of shops that signed themselves up — approve one and
+  its location and print agent are created together; decline one with a reason
+  the shop is shown; suspend a live one without touching its history.
 - Locations: create, edit, assign printers, set prices, generate and print QR
   codes, rotate a QR token if a sticker is compromised.
 - Printers: add, enable, test the connection, probe capabilities, record a

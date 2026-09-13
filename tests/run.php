@@ -2765,6 +2765,284 @@ $runner->test('TL.4', 'RAW/9100 does not claim a job printed', 'delivery confirm
     );
 });
 
+$runner->group('Shop self-registration');
+
+$registrationEmail = 'ramesh' . bin2hex(random_bytes(3)) . '@shop.test';
+$registrationPassword = 'Anchor-Marigold-7731';
+
+$runner->test('TP.1', 'Anyone can register a shop from the public site', 'a registration, and nothing more', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+    $locationsBefore = (int) $db->scalar('SELECT COUNT(*) FROM locations');
+    $devicesBefore = (int) $db->scalar('SELECT COUNT(*) FROM devices');
+
+    $shop = new HttpClient($baseUrl);
+    $form = $shop->get('/register');
+    if ($form['status'] !== 200) {
+        return ['pass' => false, 'actual' => 'GET /register returned ' . $form['status']];
+    }
+
+    $shop->submitForm('/register', [
+        'shop_name' => "Ramesh's Xerox & Stationery",
+        'contact_name' => 'Ramesh Patel',
+        'email' => $registrationEmail,
+        'phone' => '9876543210',
+        'address_line1' => '14 Station Road',
+        'city' => 'Rajkot',
+        'state' => 'Gujarat',
+        'postal_code' => '360001',
+        'password' => $registrationPassword,
+        'password_confirmation' => $registrationPassword,
+    ]);
+
+    $row = $db->selectOne('SELECT * FROM partners WHERE email = ?', [$registrationEmail]);
+
+    // The whole point of the queue: a public form must not be able to put a
+    // location or a print agent into the estate.
+    $locationsAfter = (int) $db->scalar('SELECT COUNT(*) FROM locations');
+    $devicesAfter = (int) $db->scalar('SELECT COUNT(*) FROM devices');
+
+    return TestRunner::assertTrue(
+        $row !== null
+            && $row['status'] === 'pending'
+            && $row['location_id'] === null
+            && $row['device_id'] === null
+            && $locationsAfter === $locationsBefore
+            && $devicesAfter === $devicesBefore,
+        sprintf(
+            'Recorded as "%s", waiting for approval. Locations still %d and print agents still %d — '
+            . 'registering creates neither.',
+            $row['shop_name'] ?? '-', $locationsAfter, $devicesAfter
+        ),
+        sprintf('row=%s locations %d->%d devices %d->%d',
+            json_encode($row), $locationsBefore, $locationsAfter, $devicesBefore, $devicesAfter)
+    );
+});
+
+$runner->test('TP.2', 'The password is stored hashed and must survive the policy', 'no plaintext, no guessable password', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+    $hash = (string) $db->scalar('SELECT password_hash FROM partners WHERE email = ?', [$registrationEmail]);
+
+    $weak = new HttpClient($baseUrl);
+    $weak->get('/register');
+    $weakEmail = 'weak' . bin2hex(random_bytes(3)) . '@shop.test';
+    $weak->submitForm('/register', [
+        'shop_name' => 'Weak Shop', 'contact_name' => 'Test', 'email' => $weakEmail,
+        'phone' => '9000000000', 'password' => 'password1', 'password_confirmation' => 'password1',
+    ]);
+    $weakRow = $db->selectOne('SELECT id FROM partners WHERE email = ?', [$weakEmail]);
+
+    // And the two password boxes must actually be compared.
+    $mismatch = new HttpClient($baseUrl);
+    $mismatch->get('/register');
+    $mismatchEmail = 'typo' . bin2hex(random_bytes(3)) . '@shop.test';
+    $mismatch->submitForm('/register', [
+        'shop_name' => 'Typo Shop', 'contact_name' => 'Test', 'email' => $mismatchEmail,
+        'phone' => '9000000001',
+        'password' => 'Anchor-Marigold-7731', 'password_confirmation' => 'Anchor-Marigold-7732',
+    ]);
+    $mismatchRow = $db->selectOne('SELECT id FROM partners WHERE email = ?', [$mismatchEmail]);
+
+    return TestRunner::assertTrue(
+        $hash !== '' && $hash !== $registrationPassword && !str_contains($hash, $registrationPassword)
+            && password_verify($registrationPassword, $hash)
+            && $weakRow === null && $mismatchRow === null,
+        'Stored as ' . substr($hash, 0, 7) . '… and verifiable; "password1" was refused by the policy '
+        . 'and a mistyped confirmation was refused too.',
+        sprintf('hash=%s weak_row=%s mismatch_row=%s',
+            substr($hash, 0, 20), json_encode($weakRow), json_encode($mismatchRow))
+    );
+});
+
+$runner->test('TP.3', 'A registration cannot approve itself', 'approval is the operator\'s, and authenticated', function () use ($baseUrl, $connectDb, $registrationEmail) {
+    $db = $connectDb();
+    $partnerId = (int) $db->scalar('SELECT id FROM partners WHERE email = ?', [$registrationEmail]);
+
+    $stranger = new HttpClient($baseUrl);
+    $response = $stranger->post('/admin/registrations/' . $partnerId . '/approve');
+    $status = (string) $db->scalar('SELECT status FROM partners WHERE id = ?', [$partnerId]);
+
+    return TestRunner::assertTrue(
+        $response['status'] >= 300 && $status === 'pending',
+        sprintf('Refused with HTTP %d and the shop is still pending.', $response['status']),
+        sprintf('HTTP %d, status now %s', $response['status'], $status)
+    );
+});
+
+$runner->test('TP.4', 'Approving creates the location and the print agent', 'one transaction, both or neither', function () use ($connectDb, $adminClient, $registrationEmail) {
+    $db = $connectDb();
+    $partnerId = (int) $db->scalar('SELECT id FROM partners WHERE email = ?', [$registrationEmail]);
+
+    $adminClient->get('/admin/registrations');
+    $adminClient->submitForm('/admin/registrations/' . $partnerId . '/approve');
+
+    $row = $db->selectOne('SELECT * FROM partners WHERE id = ?', [$partnerId]);
+    $location = $row['location_id'] === null ? null
+        : $db->selectOne('SELECT * FROM locations WHERE id = ?', [(int) $row['location_id']]);
+    $device = $row['device_id'] === null ? null
+        : $db->selectOne('SELECT * FROM devices WHERE id = ?', [(int) $row['device_id']]);
+
+    // The QR token must be stored as a hash here exactly as anywhere else.
+    $tokenIsHashed = $location !== null
+        && strlen((string) $location['qr_token_hash']) === 64
+        && ctype_xdigit((string) $location['qr_token_hash']);
+
+    return TestRunner::assertTrue(
+        $row['status'] === 'approved' && $location !== null && $device !== null && $tokenIsHashed
+            && (int) $device['location_id'] === (int) $location['id'],
+        sprintf(
+            'Location "%s" (code %s) and print agent "%s" created together; the QR token is stored '
+            . 'only as a hash.',
+            $location['name'] ?? '-', $location['code'] ?? '-', $device['name'] ?? '-'
+        ),
+        sprintf('status=%s location=%s device=%s hashed=%s',
+            $row['status'], json_encode($location), json_encode($device), json_encode($tokenIsHashed))
+    );
+});
+
+$runner->test('TP.5', 'The shop signs in and issues its own agent token', 'a working token, nobody read it aloud', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+
+    $shop = new HttpClient($baseUrl);
+    $shop->get('/partner/login');
+    $shop->submitForm('/partner/login', ['email' => $registrationEmail, 'password' => $registrationPassword]);
+
+    $dashboard = $shop->get('/partner');
+    if ($dashboard['status'] !== 200) {
+        return ['pass' => false, 'actual' => 'GET /partner after signing in returned ' . $dashboard['status']];
+    }
+
+    // submitForm follows the redirect, so the token is on that response —
+    // the page it lands on is the one page load it is ever shown on.
+    $issued = $shop->submitForm('/partner/token');
+    if (preg_match('#<p class="p-token">([^<]+)</p>#', $issued['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'The token was not shown: ' . substr($issued['body'], 0, 300)];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+
+    // Only a hash of it is kept, and it must actually authenticate the agent.
+    $stored = $db->selectOne('SELECT * FROM api_tokens WHERE token_hash = ?', [hash('sha256', $token)]);
+    $plaintextAnywhere = (int) $db->scalar(
+        'SELECT COUNT(*) FROM api_tokens WHERE token_hash = ? OR token_prefix = ?',
+        [$token, $token]
+    );
+
+    $curl = curl_init($baseUrl . '/api/agent/config');
+    curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
+    ]);
+    $body = (string) curl_exec($curl);
+    $apiStatus = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+    curl_close($curl);
+    $config = json_decode($body, true) ?: [];
+
+    // Shown once and once only.
+    $again = $shop->get('/partner');
+    $shownAgain = preg_match('#<p class="p-token">#', $again['body']) === 1;
+
+    return TestRunner::assertTrue(
+        $stored !== null && $plaintextAnywhere === 0 && $apiStatus === 200
+            && ($config['device']['name'] ?? '') !== '' && !$shownAgain,
+        sprintf(
+            'Token %s… works against the agent API as "%s", is stored only as a SHA-256 hash, and is '
+            . 'not shown again on the next page load.',
+            substr($token, 0, 12), $config['device']['name'] ?? '-'
+        ),
+        sprintf('stored=%s plaintext_rows=%d api=%d shown_again=%s',
+            json_encode($stored !== null), $plaintextAnywhere, $apiStatus, json_encode($shownAgain))
+    );
+});
+
+$runner->test('TP.6', 'Issuing a replacement retires the old token', 'one live token per shop', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+
+    $shop = new HttpClient($baseUrl);
+    $shop->get('/partner/login');
+    $shop->submitForm('/partner/login', ['email' => $registrationEmail, 'password' => $registrationPassword]);
+
+    $readToken = static function (HttpClient $client): string {
+        $page = $client->submitForm('/partner/token');
+        return preg_match('#<p class="p-token">([^<]+)</p>#', $page['body'], $m) === 1
+            ? html_entity_decode(trim($m[1]), ENT_QUOTES) : '';
+    };
+
+    $first = $readToken($shop);
+    $second = $readToken($shop);
+
+    $check = static function (string $token) use ($baseUrl): int {
+        $curl = curl_init($baseUrl . '/api/agent/config');
+        curl_setopt_array($curl, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
+        ]);
+        curl_exec($curl);
+        $status = (int) curl_getinfo($curl, CURLINFO_HTTP_CODE);
+        curl_close($curl);
+        return $status;
+    };
+
+    $firstStatus = $check($first);
+    $secondStatus = $check($second);
+
+    return TestRunner::assertTrue(
+        $first !== '' && $second !== '' && $first !== $second
+            && $firstStatus === 401 && $secondStatus === 200,
+        sprintf('The replacement works (HTTP %d) and the one it replaced does not (HTTP %d).',
+            $secondStatus, $firstStatus),
+        sprintf('first=%d second=%d same=%s', $firstStatus, $secondStatus, json_encode($first === $second))
+    );
+});
+
+$runner->test('TP.7', 'One shop cannot reach another shop\'s page', 'the session decides, not the URL', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+
+    // A second shop, approved, so there is something to try to reach.
+    $otherEmail = 'other' . bin2hex(random_bytes(3)) . '@shop.test';
+    $otherPassword = 'Compass-Thistle-9084';
+    $other = new HttpClient($baseUrl);
+    $other->get('/register');
+    $other->submitForm('/register', [
+        'shop_name' => 'Other Copy Centre', 'contact_name' => 'Other Owner',
+        'email' => $otherEmail, 'phone' => '9000000002',
+        'password' => $otherPassword, 'password_confirmation' => $otherPassword,
+    ]);
+
+    // Signed out entirely: the dashboard is not readable at all.
+    $anonymous = new HttpClient($baseUrl);
+    $anonymousView = $anonymous->get('/partner');
+
+    // Signed in as the first shop: the page shows that shop and no other.
+    $shop = new HttpClient($baseUrl);
+    $shop->get('/partner/login');
+    $shop->submitForm('/partner/login', ['email' => $registrationEmail, 'password' => $registrationPassword]);
+    $page = $shop->get('/partner');
+
+    // A shop still waiting for approval has no token to issue.
+    $pending = new HttpClient($baseUrl);
+    $pending->get('/partner/login');
+    $pending->submitForm('/partner/login', ['email' => $otherEmail, 'password' => $otherPassword]);
+    $refused = $pending->post('/partner/token', ['_token' => $pending->csrfToken()]);
+    $tokensForPending = (int) $db->scalar(
+        'SELECT COUNT(*) FROM api_tokens t
+         JOIN partners p ON p.device_id = t.device_id
+         WHERE p.email = ?',
+        [$otherEmail]
+    );
+
+    return TestRunner::assertTrue(
+        $anonymousView['status'] >= 300
+            && !str_contains($page['body'], 'Other Copy Centre')
+            && $refused['status'] >= 300
+            && $tokensForPending === 0,
+        'Signed out the page redirects to the sign-in; signed in it shows only that shop; and a '
+        . 'shop still waiting for approval is refused a token.',
+        sprintf('anonymous=%d leaked=%s token_refused=%d pending_tokens=%d',
+            $anonymousView['status'],
+            json_encode(str_contains($page['body'], 'Other Copy Centre')),
+            $refused['status'], $tokensForPending)
+    );
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════════
