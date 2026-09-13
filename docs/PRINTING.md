@@ -94,6 +94,18 @@ something to render it; Sumatra is a single portable executable that does that
 and nothing else. Without it the agent refuses jobs with a clear message rather
 than pretending to print.
 
+**LibreOffice is required for anything that is not a PDF.** On Linux, CUPS has
+filters for images and plain text. Windows has none, and SumatraPDF prints
+PDFs - handed a PNG it produced no paper and no error, which is worse than a
+refusal. So on Windows, images and text are converted to PDF first, exactly
+like Office documents, and a job is refused outright if LibreOffice is missing.
+
+**Completion is observed, not assumed.** A job is only reported printed once it
+has been seen in the Windows spooler and then seen to leave it. An earlier
+version asked the queue for a job by name, found none, and read that as
+"already finished" - so a document that never reached the printer was reported
+to the customer as printed.
+
 ### What the Windows backend cannot do
 
 **Orientation.** Paper size, colour and duplex are set through

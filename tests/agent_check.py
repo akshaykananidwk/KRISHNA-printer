@@ -235,6 +235,70 @@ def main() -> int:
           and "Set-Content -Path $configPath -Encoding UTF8" not in installer_text,
           "install.ps1 still uses Set-Content -Encoding UTF8")
 
+    # --- Submission and job tracking ---------------------------------------
+    print("Submission and job tracking")
+
+    check("Windows converts images instead of sending them to SumatraPDF",
+          ".png" in agent.Windows.convert_formats
+          and ".png" not in agent.Windows.direct_formats
+          and ".pdf" in agent.Windows.direct_formats,
+          f"direct={sorted(agent.Windows.direct_formats)}")
+    check("CUPS still prints images directly",
+          ".png" in agent.Cups.direct_formats,
+          f"direct={sorted(agent.Cups.direct_formats)}")
+
+    import subprocess as _sp
+    real_run = _sp.run
+    agent.Windows.sumatra = staticmethod(lambda: "sumatra.exe")
+
+    def submit_with(spooled):
+        agent.Windows._await_spooled = classmethod(
+            lambda cls, queue, document, seconds=0.5: spooled
+        )
+        _sp.run = lambda *a, **k: FakeResult("", 0)
+        try:
+            return agent.Windows.submit(
+                "HP LaserJet M1005", Path("/tmp/x.pdf"), "AK100001 doc", ["copies=1"]
+            )
+        finally:
+            _sp.run = real_run
+
+    # The job that started all this: SumatraPDF exited 0, nothing was queued,
+    # and the agent told the customer their document had printed.
+    accepted, message, job_id = submit_with(None)
+    check("a job that never reaches the queue is a failure, not a completion",
+          accepted is False and job_id is None, f"got {accepted}, {job_id}")
+    check("and the failure says what to check",
+          "never reached the Windows print queue" in message, message[:120])
+
+    accepted, _, job_id = submit_with(7)
+    check("a job seen in the queue returns its real Windows id",
+          accepted is True and job_id == "HP LaserJet M1005::7", f"got {job_id}")
+
+    def status_is(text):
+        agent.Windows._ps = classmethod(
+            lambda cls, script, timeout=30: FakeResult(text, 0)
+        )
+        return agent.Windows.job_finished("HP LaserJet M1005::7")
+
+    for text, expected_finished, expected_ok, label in (
+        ("Printing", False, False, "a printing job is not finished"),
+        ("Spooling", False, False, "a spooling job is not finished"),
+        ("GONE", True, True, "a job that has left the queue completed"),
+        ("Error", True, False, "a job in error is a failure"),
+        ("PaperOut", True, False, "a job stuck on paper is a failure"),
+    ):
+        finished, successful, _ = status_is(text)
+        check(label, (finished, successful) == (expected_finished, expected_ok),
+              f"got finished={finished} ok={successful}")
+
+    # An id from the older build cannot be tracked. That must not read as
+    # success - the whole point is that completion is observed, not assumed.
+    finished, successful, _ = agent.Windows.job_finished("document.png")
+    check("an untrackable job id is never reported as printed",
+          finished is True and successful is False,
+          f"got finished={finished} ok={successful}")
+
     # --- Printer list refresh ----------------------------------------------
     print("Printer assignment")
 
@@ -324,7 +388,7 @@ def main() -> int:
 
     agent.Windows.printer_state("HP LaserJet M1005")
     agent.Windows.capabilities("HP LaserJet M1005")
-    agent.Windows.job_finished("AK100042")
+    agent.Windows.job_finished("HP LaserJet M1005::42")
     agent.Windows.printer_state("Ravi's Printer")
     agent.Windows._configure("HP LaserJet M1005", {
         "paper": "A4", "color": "monochrome", "duplex": "TwoSidedLongEdge",

@@ -67,8 +67,16 @@ from typing import Any
 AGENT_VERSION = "1.0.0"
 
 # Formats CUPS can print directly. Everything else is converted to PDF first.
+# What each backend can print without help, and what has to become a PDF
+# first. CUPS has filters for images and plain text; Windows has none - there
+# SumatraPDF is the only thing that prints unattended, and it prints PDFs.
+# Sending it a PNG produced no paper and no error, which is worse than a
+# refusal, so images and text go through LibreOffice on Windows too.
 DIRECT_FORMATS = {".pdf", ".jpg", ".jpeg", ".png", ".txt"}
 CONVERT_FORMATS = {".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+
+WINDOWS_DIRECT_FORMATS = {".pdf"}
+WINDOWS_CONVERT_FORMATS = CONVERT_FORMATS | {".jpg", ".jpeg", ".png", ".txt"}
 
 # PWG media names → the sizes this application knows about.
 PWG_TO_SIZE = {
@@ -209,6 +217,9 @@ class Api:
 
 class Cups:
     """Wrapper over the CUPS command-line tools."""
+
+    direct_formats = DIRECT_FORMATS
+    convert_formats = CONVERT_FORMATS
 
     @staticmethod
     def available() -> bool:
@@ -519,6 +530,9 @@ class Windows:
     time, which is what makes that safe.
     """
 
+    direct_formats = WINDOWS_DIRECT_FORMATS
+    convert_formats = WINDOWS_CONVERT_FORMATS
+
     #: Win32_Printer DetectedErrorState, mapped to the IPP-style reasons the
     #: server already understands. Anything blocking here stops the printer
     #: being offered to customers.
@@ -763,22 +777,63 @@ class Windows:
                 (result.stderr or result.stdout or "SumatraPDF could not print the file.").strip()[:400]
             ), None
 
+        # A zero exit code is not proof that anything was queued. Wait until the
+        # job actually appears in the spooler.
+        #
+        # Without this the agent reported "completed" for a job that never
+        # reached the printer at all: it asked the queue for a job by name,
+        # found none, and read that as "already finished". A customer was told
+        # their document had printed while the printer had not moved.
+        job_id = cls._await_spooled(queue, path.name)
+        if job_id is None:
+            return False, (
+                "The document was handed to SumatraPDF but never reached the Windows print "
+                "queue, so nothing was printed. Check that the printer is not paused and "
+                "that the file is a PDF."
+            ), None
+
         messages = [m for m in (note, unsupported) if m]
-        return True, " ".join(messages) or "Sent to the Windows print queue.", path.name
+        return True, " ".join(messages) or "Sent to the Windows print queue.", f"{queue}::{job_id}"
+
+    @classmethod
+    def _await_spooled(cls, queue: str, document: str, seconds: float = 20.0) -> int | None:
+        """Wait for the submitted document to show up in the queue, and return its id."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            script = (
+                "$ErrorActionPreference='SilentlyContinue';"
+                f"$j = Get-PrintJob -PrinterName {cls._quote(queue)} | Where-Object "
+                f"{{ $_.DocumentName -like {cls._quote('*' + document + '*')} }} | "
+                "Select-Object -First 1;"
+                "if ($j) { $j.Id } else { '' }"
+            )
+            result = cls._ps(script, timeout=30)
+            found = result.stdout.strip()
+            if result.returncode == 0 and found.isdigit():
+                return int(found)
+            time.sleep(0.4)
+        return None
 
     @classmethod
     def job_finished(cls, job_id: str) -> tuple[bool, bool, str]:
         """
-        job_id is the spooled document name. A job that is no longer listed has
-        left the spooler; one in an error state is reported as failed rather
-        than left to time out.
+        Has the job left the queue, and did it leave cleanly?
+
+        job_id is "<queue>::<windows job id>", issued by submit() only after it
+        saw the job in the spooler. That ordering matters: because the job is
+        known to have existed, its absence now genuinely means it finished,
+        rather than meaning it never arrived.
         """
+        queue, _, raw_id = job_id.partition("::")
+        if not raw_id.isdigit():
+            # An id from an older agent build, or a malformed one. Say so
+            # instead of reporting a completion nobody verified.
+            return True, False, "This job cannot be tracked; its queue id is unknown."
+
         script = (
             "$ErrorActionPreference='SilentlyContinue';"
-            "$jobs = Get-Printer | Get-PrintJob | Where-Object { $_.DocumentName -like "
-            f"{cls._quote('*' + job_id + '*')} }};"
-            "if (-not $jobs) { Write-Output 'GONE'; exit 0 };"
-            "($jobs | Select-Object -First 1).JobStatus"
+            f"$j = Get-PrintJob -PrinterName {cls._quote(queue)} -ID {int(raw_id)};"
+            "if ($j) { $j.JobStatus } else { 'GONE' }"
         )
         result = cls._ps(script)
 
@@ -786,15 +841,24 @@ class Windows:
             return False, False, "Could not read the print queue."
 
         output = result.stdout.strip()
-        if "GONE" in output or output == "":
+        if output in ("", "GONE"):
             return True, True, "The job has left the Windows print queue."
 
         lowered = output.lower()
-        for bad in ("error", "deleted", "blocked", "offline", "paperout", "userintervention"):
-            if bad in lowered:
-                return True, False, f"Windows reported the job as {output.strip()}."
 
-        return False, False, f"Still in the queue ({output.strip()})."
+        # "Printing", "Spooling" and "Retained" are all progress. These are not.
+        for bad, explanation in (
+            ("error", "the printer reported an error"),
+            ("deleted", "the job was deleted"),
+            ("blocked", "the job is blocked"),
+            ("offline", "the printer is offline"),
+            ("paperout", "the printer is out of paper"),
+            ("userintervention", "the printer needs attention"),
+        ):
+            if bad in lowered:
+                return True, False, f"Windows reports {explanation} ({output})."
+
+        return False, False, f"Still in the queue ({output})."
 
 
 def translate_options(options: list[str]) -> tuple[dict[str, str], list[str], str]:
@@ -1082,7 +1146,7 @@ class Agent:
             printable = source
             note = ""
 
-            if extension in CONVERT_FORMATS:
+            if extension in self.spooler.convert_formats:
                 converted, message = Converter.to_pdf(source, work)
                 if converted is None:
                     log.error("Conversion failed for %s: %s", job_number, message)
@@ -1100,7 +1164,7 @@ class Agent:
                 if pages:
                     note += f" ({pages} pages after conversion)"
 
-            elif extension not in DIRECT_FORMATS:
+            elif extension not in self.spooler.direct_formats:
                 self.safe_report(job_number, lease, "failed",
                                  message=f"This agent cannot print {extension} files.",
                                  error_code="unsupported_format",
