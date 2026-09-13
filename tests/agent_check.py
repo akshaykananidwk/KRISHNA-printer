@@ -66,6 +66,14 @@ class FakeResult:
 def main() -> int:
     agent = load_agent()
 
+    # Several checks below replace class methods with stubs. Keep the originals
+    # so a later section is not silently testing an earlier section's stub -
+    # which is exactly what happened the first time this file grew.
+    originals = {
+        name: agent.Windows.__dict__[name]
+        for name in ("_ps", "_queue_job_ids", "_await_spooled", "sumatra")
+    }
+
     # --- Option translation ------------------------------------------------
     print("Option translation")
 
@@ -267,8 +275,9 @@ def main() -> int:
     agent.Windows.sumatra = staticmethod(lambda: "sumatra.exe")
 
     def submit_with(spooled):
+        agent.Windows._queue_job_ids = classmethod(lambda cls, queue: set())
         agent.Windows._await_spooled = classmethod(
-            lambda cls, queue, document, seconds=0.5: spooled
+            lambda cls, queue, before, seconds=0.5: spooled
         )
         _sp.run = lambda *a, **k: FakeResult("", 0)
         try:
@@ -284,7 +293,7 @@ def main() -> int:
     check("a job that never reaches the queue is a failure, not a completion",
           accepted is False and job_id is None, f"got {accepted}, {job_id}")
     check("and the failure says what to check",
-          "never reached the Windows print queue" in message, message[:120])
+          "no job appeared in the Windows print queue" in message, message[:140])
 
     accepted, _, job_id = submit_with(7)
     check("a job seen in the queue returns its real Windows id",
@@ -313,6 +322,49 @@ def main() -> int:
     check("an untrackable job id is never reported as printed",
           finished is True and successful is False,
           f"got finished={finished} ok={successful}")
+
+    # --- Spool detection ----------------------------------------------------
+    print("Spool detection")
+
+    for name, original in originals.items():
+        setattr(agent.Windows, name, original)
+
+    def queue_returns(text, returncode=0):
+        agent.Windows._ps = classmethod(
+            lambda cls, script, timeout=30: FakeResult(text, returncode)
+        )
+
+    queue_returns("12,13,14")
+    check("the queue's job ids are read",
+          agent.Windows._queue_job_ids("P") == {12, 13, 14},
+          f"got {agent.Windows._queue_job_ids('P')}")
+
+    queue_returns("")
+    check("an empty queue reads as no jobs",
+          agent.Windows._queue_job_ids("P") == set())
+
+    queue_returns("", 1)
+    check("an unreadable queue is None, not an empty queue",
+          agent.Windows._queue_job_ids("P") is None)
+
+    # A job already in the queue when the agent submits must not be mistaken
+    # for the one it just sent.
+    queue_returns("12")
+    check("a pre-existing job is not claimed as ours",
+          agent.Windows._await_spooled("P", {12}, seconds=0.5) is None)
+
+    queue_returns("12,19")
+    check("a genuinely new job is picked up",
+          agent.Windows._await_spooled("P", {12}, seconds=0.5) == 19)
+
+    # The whole file, not just this class: a bulk edit once left a second copy
+    # of Converter and Windows in place, and Python kept the later one - so
+    # fixes went into code that never ran.
+    source = AGENT.read_text()
+    for name in ("class Cups:", "class Windows:", "class Converter:", "class Agent:"):
+        check(f"{name.rstrip(':')} is defined exactly once",
+              source.count("\n" + name) == 1,
+              f"found {source.count(chr(10) + name)}")
 
     # --- Printer list refresh ----------------------------------------------
     print("Printer assignment")

@@ -760,12 +760,14 @@ class Windows:
 
         note = cls._configure(queue, queue_settings)
 
-        # The document name is how the job is found in the spooler afterwards,
-        # so it carries the job number.
         args = [viewer, "-print-to", queue, "-silent"]
         if print_settings:
             args.extend(["-print-settings", ",".join(print_settings)])
         args.append(str(path))
+
+        # What is already in the queue, so a job added by this run can be told
+        # apart from one that was there before.
+        before = cls._queue_job_ids(queue) or set()
 
         try:
             result = subprocess.run(args, capture_output=True, text=True, timeout=300, check=False)
@@ -802,33 +804,49 @@ class Windows:
         # reached the printer at all: it asked the queue for a job by name,
         # found none, and read that as "already finished". A customer was told
         # their document had printed while the printer had not moved.
-        job_id = cls._await_spooled(queue, path.name)
+        job_id = cls._await_spooled(queue, before)
         if job_id is None:
             return False, (
-                "The document was handed to SumatraPDF but never reached the Windows print "
-                "queue, so nothing was printed. Check that the printer is not paused and "
-                "that the file is a PDF."
+                "SumatraPDF ran without error but no job appeared in the Windows print "
+                "queue, so nothing was printed. Check that the printer is not paused, and "
+                "that its Advanced properties are set to spool jobs rather than \"Print "
+                "directly to the printer\", which bypasses the queue entirely."
             ), None
 
         messages = [m for m in (note, unsupported) if m]
         return True, " ".join(messages) or "Sent to the Windows print queue.", f"{queue}::{job_id}"
 
     @classmethod
-    def _await_spooled(cls, queue: str, document: str, seconds: float = 20.0) -> int | None:
-        """Wait for the submitted document to show up in the queue, and return its id."""
+    def _queue_job_ids(cls, queue: str) -> set[int] | None:
+        """The ids currently in this printer's queue, or None if unreadable."""
+        script = (
+            "$ErrorActionPreference='SilentlyContinue';"
+            f"$j = Get-PrintJob -PrinterName {cls._quote(queue)};"
+            "if ($j) { ($j | ForEach-Object { $_.Id }) -join ',' } else { '' }"
+        )
+        result = cls._ps(script, timeout=30)
+        if result.returncode != 0:
+            return None
+        return {int(part) for part in result.stdout.strip().split(",") if part.strip().isdigit()}
+
+    @classmethod
+    def _await_spooled(cls, queue: str, before: set[int], seconds: float = 20.0) -> int | None:
+        """
+        Wait for a new job to appear in the queue, and return its id.
+
+        Matched by id, not by document name. Name matching looked obvious and
+        was wrong: SumatraPDF names the spooled job after the PDF's internal
+        title, not the file it was handed, so the agent searched the queue for
+        "document.pdf" while it actually held "Krishna Printer test page" -
+        found nothing, and reported that the job had never been queued.
+        """
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            script = (
-                "$ErrorActionPreference='SilentlyContinue';"
-                f"$j = Get-PrintJob -PrinterName {cls._quote(queue)} | Where-Object "
-                f"{{ $_.DocumentName -like {cls._quote('*' + document + '*')} }} | "
-                "Select-Object -First 1;"
-                "if ($j) { $j.Id } else { '' }"
-            )
-            result = cls._ps(script, timeout=30)
-            found = result.stdout.strip()
-            if result.returncode == 0 and found.isdigit():
-                return int(found)
+            current = cls._queue_job_ids(queue)
+            if current is not None:
+                fresh = current - before
+                if fresh:
+                    return min(fresh)
             time.sleep(0.4)
         return None
 

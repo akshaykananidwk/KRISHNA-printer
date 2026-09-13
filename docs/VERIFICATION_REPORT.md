@@ -6,8 +6,8 @@ Krishna Printer — Commercial Multi-Location Cloud Printing Management System
 
 | | |
 |---|---|
-| Run at | 2026-09-13 15:01:47 UTC |
-| Duration | 11.23 seconds |
+| Run at | 2026-09-13 15:07:53 UTC |
+| Duration | 12.58 seconds |
 | PHP | 8.4.25 |
 | Database | 10.11.14-MariaDB-0ubuntu0.24.04.1 |
 | Application under test | http://127.0.0.1:8088 |
@@ -90,7 +90,7 @@ restore were executed against it.
 | T23.2 | Security headers are present on every response | CSP, nosniff, frame-options | CSP with a per-request nonce and no unsafe-inline; nosniff, DENY and referrer-policy all set. | **PASS** |
 | T23.3 | SQL injection in a search field is neutralised | the query is treated as text | HTTP 200 and print_jobs still exists — the payload was bound as a parameter. | **PASS** |
 | T23.4 | XSS in a stored field is escaped on output | the script tag is encoded | The payload was stored and rendered as escaped text, not as markup. | **PASS** |
-| T23.5 | Secrets are encrypted at rest | ciphertext, not the plaintext value | Stored as sod1:lacQbiz… — the plaintext does not appear in the database. | **PASS** |
+| T23.5 | Secrets are encrypted at rest | ciphertext, not the plaintext value | Stored as sod1:ALjaLuD… — the plaintext does not appear in the database. | **PASS** |
 | T23.6 | A stored secret is never echoed back to the browser | the settings page shows no plaintext | The settings form shows only a "stored" placeholder. | **PASS** |
 | T23.7 | Uploads are stored outside the web root | not reachable over HTTP | uploads/, storage/, config/, logs/ and app/ are all outside the document root and unreachable. | **PASS** |
 | T23.8 | The rate limiter blocks a burst of requests | HTTP 429 once the limit is passed | HTTP 429 returned after 281 requests from one address, once the 300-per-minute limit was crossed. | **PASS** |
@@ -117,12 +117,12 @@ restore were executed against it.
 |---|------|----------|--------|--------|
 | T1.1 | Scanning the QR opens the print page for the right location | HTTP 200 naming the location | HTTP 200; the page identified "Test Branch" and its printer. | **PASS** |
 | T2.1 | A QR token that does not match is rejected | HTTP 404, no location leaked | HTTP 404 with a generic message; the location name is not disclosed. | **PASS** |
-| T2.2 | The QR token is stored only as a hash | no plaintext token in the database | Only the SHA-256 hash is stored (hint: aac0b377…). A stolen database dump yields no working QR link. | **PASS** |
+| T2.2 | The QR token is stored only as a hash | no plaintext token in the database | Only the SHA-256 hash is stored (hint: 5ca701e2…). A stolen database dump yields no working QR link. | **PASS** |
 | T3.4 | The page reports the printer as online | the status endpoint says available | Available; status=online | **PASS** |
 | T5.1 | A PDF uploads and its page count is read exactly | 12 pages, parsed | Uploaded; 12 pages read from the PDF page tree (source: parsed). | **PASS** |
 | T5.2 | A file with a disallowed extension is refused | rejected before storage | Refused: "malicious.php" is not a supported file type. Accepted: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX, PPT, PPTX. | **PASS** |
 | T5.3 | A file whose contents contradict its extension is refused | MIME/magic mismatch caught | Refused: "disguised.pdf" does not appear to be a valid PDF file (its content is text/x-php). | **PASS** |
-| T5.4 | Stored files get a random name, not the uploaded one | no original filename on disk | Original "twelve-pages.pdf" stored as "71dba116639e397d2360ddaedab7be7f32e98b18.pdf" — the uploaded name never touches the filesystem path. | **PASS** |
+| T5.4 | Stored files get a random name, not the uploaded one | no original filename on disk | Original "twelve-pages.pdf" stored as "a1a8ace7e8252cdf0ef5c2d86a4b0339d3ed9795.pdf" — the uploaded name never touches the filesystem path. | **PASS** |
 | T6.1 | Multiple files upload in one order | both accepted with correct page counts | 2 files accepted with page counts 3, 7. | **PASS** |
 
 ### Pricing and page ranges (tests 7, 14)
@@ -157,14 +157,14 @@ restore were executed against it.
 
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
-| T17.1 | A job is created and queued | a job number is issued | Job created; payment_required=false, redirect=/print/success/d6fbe34b1f44ff8f2eb789d0ebc4a891 | **PASS** |
+| T17.1 | A job is created and queued | a job number is issued | Job created; payment_required=false, redirect=/print/success/e724c809d7147ed7ed7779699c5a6781 | **PASS** |
 | T14.4 | The customer is shown a job number | the receipt names it | The receipt shows "Print Job #AK100001" and the confirmation message. | **PASS** |
 | T8.1 | The job records the settings the customer chose | B&W, A4, 2 copies, pages 1-5 | bw, A4, 2 copies, pages 1-5 → 5 selected, 10 billable, ₹20.00. | **PASS** |
-| T17.2 | The worker sends the job to the printer over IPP | the printer accepts it | Status "completed", printer job id 2. Worker output: 15:01:42 [sent] AK100001 — Printer accepted the job (IPP job 2). \| 15:01:42 Reconciled: 1 completed, 0 failed of 1 checked \| 15:01:42 Worker finished: 1 job(s) in 0 second(s) | **PASS** |
+| T17.2 | The worker sends the job to the printer over IPP | the printer accepts it | Status "completed", printer job id 3. Worker output: 15:07:46 [sent] AK100001 — Printer accepted the job (IPP job 3). \| 15:07:46 Reconciled: 1 completed, 0 failed of 1 checked \| 15:07:46 Worker finished: 1 job(s) in 0 second(s) | **PASS** |
 | T17.3 | The print options actually reached the printer | IPP attributes match the job | The printer received copies=2, media=iso_a4_210x297mm, sides=one-sided, colour=monochrome, 4005 bytes total. | **PASS** |
 | T17.4 | A page range is sent as an IPP page-ranges attribute | pages 1-5 in the job ticket | page-ranges = {"lower":1,"upper":5} — the range travelled to the printer as a rangeOfInteger, not just as a billing figure. | **PASS** |
 | T12.1 | The admin job list shows the job | the job number appears | The job list shows AK100001. | **PASS** |
-| T10.1 | A4 printing works end to end | the job completed on A4 | Completed on A4 at 2026-09-13 15:01:42 UTC. | **PASS** |
+| T10.1 | A4 printing works end to end | the job completed on A4 | Completed on A4 at 2026-09-13 15:07:46 UTC. | **PASS** |
 
 ### Failure, retry and cancellation (tests 18-20)
 
@@ -207,8 +207,8 @@ restore were executed against it.
 
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
-| T25.1 | A database backup is created and is restorable | a verified, non-trivial dump | Backup db-20260913-150143-3b45c157.sql.gz: 11,759 bytes, checksum verified, contains CREATE TABLE for print_jobs. | **PASS** |
-| T25.2 | An application backup is created | a zip containing the code | Application backup app-20260913-150144-91882366.zip contains the code and correctly excludes customer uploads. | **PASS** |
+| T25.1 | A database backup is created and is restorable | a verified, non-trivial dump | Backup db-20260913-150748-a9ecb1dc.sql.gz: 11,770 bytes, checksum verified, contains CREATE TABLE for print_jobs. | **PASS** |
+| T25.2 | An application backup is created | a zip containing the code | Application backup app-20260913-150748-e5a763a9.zip contains the code and correctly excludes customer uploads. | **PASS** |
 | T25.3 | A database restore actually restores | a deleted row comes back | A row added after the backup was gone after the restore — the dump genuinely replaced the database rather than merely being written to disk. | **PASS** |
 | T26.1 | The update module reports when it is unconfigured | a clear message, no crash | Reports "Updates are not configured yet." rather than failing obscurely. | **PASS** |
 | T26.2 | Bad GitHub credentials are rejected at save time | the operator finds out immediately | The credentials were verified against GitHub before being stored, and the failure was reported at save time rather than during an update. | **PASS** |
@@ -224,7 +224,7 @@ restore were executed against it.
 |---|------|----------|--------|--------|
 | T29.1 | The customer page is mobile-first | viewport, 16px inputs, 48px targets | Viewport meta present; 16px inputs (no iOS zoom-on-focus); 48px minimum tap targets; min-width media queries (mobile-first, not desktop-down); reduced-motion respected. | **PASS** |
 | T29.2 | The admin panel adapts to a phone | drawer nav and stacked tables | The sidebar collapses to a drawer below 60rem, and data tables restack as labelled cards below 45rem rather than scrolling sideways. | **PASS** |
-| T29.3 | The QR code is genuinely scannable | decodes back to the print URL | Version 7 QR (45×45 modules) rendered as a 2,442 byte PNG. Independently decoded with OpenCV during development. | **PASS** |
+| T29.3 | The QR code is genuinely scannable | decodes back to the print URL | Version 7 QR (45×45 modules) rendered as a 2,431 byte PNG. Independently decoded with OpenCV during development. | **PASS** |
 
 ### Scale to 50+ locations (test 30)
 
@@ -233,9 +233,9 @@ restore were executed against it.
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
 | T30.1 | 50 locations and 50 printers are created | all rows present | 50 locations and 50 printers created for the scale test. | **PASS** |
-| T30.2 | Dashboard aggregates stay fast at scale | under 500 ms | Dashboard rendered in 12 ms with 50+ locations and printers. | **PASS** |
-| T30.3 | The location list pages rather than loading everything | bounded page size | 25 of 52 locations rendered (paged at 25) in 5 ms. | **PASS** |
-| T30.4 | Health checks across 50+ printers complete promptly | a bounded batch | Completed in 50 ms — 15:01:47 [printer_health] checked 0 — 0 online, 0 not (2 ms) | **PASS** |
+| T30.2 | Dashboard aggregates stay fast at scale | under 500 ms | Dashboard rendered in 11 ms with 50+ locations and printers. | **PASS** |
+| T30.3 | The location list pages rather than loading everything | bounded page size | 25 of 52 locations rendered (paged at 25) in 6 ms. | **PASS** |
+| T30.4 | Health checks across 50+ printers complete promptly | a bounded batch | Completed in 56 ms — 15:07:51 [printer_health] checked 0 — 0 online, 0 not (2 ms) | **PASS** |
 | T30.5 | Reporting queries stay indexed at scale | no full table scans on the job index | The reporting query uses an index (print_jobs carries 15 indexes, including a composite on created_at/location_id/color_mode/paper_size). | **PASS** |
 
 ### Reporting and export (test 13)
@@ -269,7 +269,7 @@ restore were executed against it.
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
 | TG.1 | The options sent to an agent carry the copies the customer paid for | copies=N is present | Both transports carry 3 copies: copies=3 media=iso_a4_210x297mm sides=one-sided print-color-mode=monochrome orientation-requested=3 ColorModel=Gray | **PASS** |
-| TG.2 | The agent handles its options, its printers and its own config correctly | every agent check passes | 51 passed, 0 failed | **PASS** |
+| TG.2 | The agent handles its options, its printers and its own config correctly | every agent check passes | 60 passed, 0 failed | **PASS** |
 | TG.3 | An operator can send a test page from the printer page | a real job, queued, not charged | AK100004 queued free of charge as 1 copy, A4, B&W, single sided, with a real PDF on disk and no customer session attached. | **PASS** |
 | TG.4 | A test page prints on a printer with nothing verified yet | not blocked by capability checks | 0 capabilities verified on this printer, and the test page still queued as AK100005. | **PASS** |
 
@@ -324,4 +324,4 @@ exercised it.
 
 ---
 
-_Generated by `tests/run.php` on 2026-09-13 15:01:47 UTC. Re-run with `php tests/run.php`._
+_Generated by `tests/run.php` on 2026-09-13 15:07:53 UTC. Re-run with `php tests/run.php`._
