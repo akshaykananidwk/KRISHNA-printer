@@ -415,6 +415,77 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
+    # --- Finding LibreOffice on Windows ------------------------------------
+    print("Finding LibreOffice")
+
+    import types
+
+    # It does not put itself on PATH - not from the MSI, not from winget - so
+    # shutil.which() alone reported it missing on a machine where winget said
+    # "already installed", and every image and Office document was refused with
+    # advice to install what was already there.
+    import os as _os
+
+    with tempfile.TemporaryDirectory() as tmp:
+        program_files = Path(tmp) / "Program Files"
+        local_appdata = Path(tmp) / "AppData" / "Local"
+        installed = program_files / "LibreOffice" / "program" / "soffice.exe"
+        per_user = local_appdata / "Programs" / "LibreOffice" / "program" / "soffice.exe"
+
+        saved_env = {k: _os.environ.get(k) for k in
+                     ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA")}
+        saved_os = agent.os
+        saved_which = agent.shutil.which
+        try:
+            _os.environ["ProgramFiles"] = str(program_files)
+            _os.environ["LOCALAPPDATA"] = str(local_appdata)
+            _os.environ.pop("ProgramFiles(x86)", None)
+            _os.environ.pop("ProgramW6432", None)
+
+            # Pretend to be Windows, with nothing on PATH - which is the real
+            # situation on every Windows machine LibreOffice is installed on.
+            agent.os = types.SimpleNamespace(name="nt", environ=_os.environ)
+            agent.shutil.which = lambda name: None
+
+            check("with nothing installed it is still reported missing",
+                  agent.Converter.libreoffice() is None)
+
+            installed.parent.mkdir(parents=True, exist_ok=True)
+            installed.write_text("")
+            found = agent.Converter.libreoffice()
+            check("a normal install under Program Files is found",
+                  found == str(installed), f"got {found}")
+
+            installed.unlink()
+            per_user.parent.mkdir(parents=True, exist_ok=True)
+            per_user.write_text("")
+            found = agent.Converter.libreoffice()
+            check("and a per-user install, which is what winget makes",
+                  found == str(per_user), f"got {found}")
+        finally:
+            agent.os = saved_os
+            agent.shutil.which = saved_which
+            for key, value in saved_env.items():
+                if value is None:
+                    _os.environ.pop(key, None)
+                else:
+                    _os.environ[key] = value
+
+    # PATH still wins where it works, which is every Linux install.
+    saved_which = agent.shutil.which
+    try:
+        agent.shutil.which = lambda name: "/usr/bin/soffice" if name == "soffice" else None
+        check("on Linux it is found on PATH as before",
+              agent.Converter.libreoffice() == "/usr/bin/soffice")
+    finally:
+        agent.shutil.which = saved_which
+
+    # The private profile is passed as a URL. "file://C:\\Users\\..." is not one.
+    source = AGENT.read_text()
+    check("the private profile is passed as a real file URL",
+          "as_uri()" in source and 'f"-env:UserInstallation=file://{profile}"' not in source,
+          "an f-string here produces file://C:\\Users\\... on Windows, which is not a URL")
+
     # --- Queues that are not printers --------------------------------------
     print("Queues that write files")
 
@@ -607,8 +678,6 @@ def main() -> int:
 
     # --- No window flashes on the counter PC -------------------------------
     print("Windows console suppression")
-
-    import types
 
     # Nothing may call subprocess.run directly: on Windows that is a console
     # window appearing over whatever the operator is doing, several times a

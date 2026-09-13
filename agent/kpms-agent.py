@@ -652,11 +652,69 @@ class Converter:
     """Converts office documents to PDF so CUPS can render them."""
 
     @staticmethod
+    def windows_candidates() -> list[Path]:
+        """
+        Where LibreOffice actually is on Windows.
+
+        It does not put itself on PATH - not from the MSI, not from winget - so
+        shutil.which() alone reported it missing on a machine where winget said
+        "already installed", and every image and Office document was refused
+        with advice to install what was already there.
+
+        Registry first: App Paths is what Windows itself consults, and it is
+        written wherever the installer put the program, including a per-user
+        install under a profile no fixed path would guess.
+        """
+        candidates: list[Path] = []
+
+        try:
+            import winreg
+
+            for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+                for key_path in (
+                    r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\soffice.exe",
+                    r"SOFTWARE\LibreOffice\UNO\InstallPath",
+                ):
+                    try:
+                        with winreg.OpenKey(root, key_path) as key:
+                            value, _ = winreg.QueryValueEx(key, "")
+                    except OSError:
+                        continue
+                    entry = Path(str(value).strip('"'))
+                    # App Paths gives the executable; InstallPath gives the
+                    # program directory it lives in.
+                    candidates.append(entry if entry.suffix.lower() == ".exe"
+                                      else entry / "soffice.exe")
+        except ImportError:
+            pass
+
+        for base in (
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            os.environ.get("ProgramW6432"),
+            os.environ.get("LOCALAPPDATA"),
+        ):
+            if not base:
+                continue
+            candidates.append(Path(base) / "LibreOffice" / "program" / "soffice.exe")
+            candidates.append(Path(base) / "Programs" / "LibreOffice" / "program" / "soffice.exe")
+
+        return candidates
+
+    @staticmethod
     def libreoffice() -> str | None:
         for binary in ("soffice", "libreoffice"):
             path = shutil.which(binary)
             if path:
                 return path
+
+        if os.name == "nt":
+            for candidate in Converter.windows_candidates():
+                try:
+                    if candidate.is_file():
+                        return str(candidate)
+                except OSError:
+                    continue
         return None
 
     @classmethod
@@ -683,7 +741,12 @@ class Converter:
                     "--headless",
                     "--norestore",
                     "--nolockcheck",
-                    f"-env:UserInstallation=file://{profile}",
+                    # as_uri(), not an f-string: on Windows this has to be
+                    # file:///C:/Users/..., and "file://C:\\Users\\..." is not a
+                    # URL at all. LibreOffice answers a malformed one by
+                    # ignoring the private profile and, where another copy is
+                    # already running, doing nothing whatsoever.
+                    f"-env:UserInstallation={profile.resolve().as_uri()}",
                     "--convert-to", "pdf",
                     "--outdir", str(output_dir),
                     str(source),

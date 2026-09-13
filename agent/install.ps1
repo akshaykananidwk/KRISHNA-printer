@@ -100,9 +100,15 @@ else {
 }
 
 # --- LibreOffice (optional) ----------------------------------------------
+# LibreOffice does not put itself on PATH, so it is looked for where it lands.
+# The LOCALAPPDATA entry is a per-user install, which is what winget makes when
+# it is not run as an administrator - missing it told people to install what
+# they already had.
 $soffice = @(
     "$env:ProgramFiles\LibreOffice\program\soffice.exe",
-    "${env:ProgramFiles(x86)}\LibreOffice\program\soffice.exe"
+    "${env:ProgramFiles(x86)}\LibreOffice\program\soffice.exe",
+    "$env:ProgramW6432\LibreOffice\program\soffice.exe",
+    "$env:LOCALAPPDATA\Programs\LibreOffice\program\soffice.exe"
 ) | Where-Object { Test-Path $_ } | Select-Object -First 1
 
 if ($soffice) {
