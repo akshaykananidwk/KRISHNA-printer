@@ -1320,6 +1320,30 @@ def main() -> int:
         verify_tls=not (args.no_verify_tls or settings.get("verify_tls") is False),
     )
 
+    # Log to a file as well as the console.
+    #
+    # Under systemd stdout goes to the journal; under a Windows scheduled task
+    # it goes nowhere at all, so an agent that misbehaves leaves no trace and
+    # there is nothing to look at but the job queue. The file lives beside the
+    # work directory, which the installer already creates and secures.
+    try:
+        config.work_dir.mkdir(parents=True, exist_ok=True)
+        log_path = config.work_dir / "agent.log"
+
+        # Keep one previous file rather than growing without bound. A shop
+        # machine runs this for months.
+        if log_path.is_file() and log_path.stat().st_size > 5 * 1024 * 1024:
+            log_path.replace(log_path.with_suffix(".log.1"))
+
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
+        )
+        logging.getLogger().addHandler(handler)
+        log.info("Logging to %s", log_path)
+    except OSError as error:
+        log.warning("Could not open a log file: %s", error)
+
     agent = Agent(config)
 
     if args.test:
