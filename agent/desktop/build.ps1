@@ -50,11 +50,23 @@ $addData = "$agent;."
 $windowFlag = '--windowed'
 if ($KeepConsole) { $windowFlag = '--console' }
 
+# Belt and braces for the runtime-loaded agent. kpms_desktop.py imports
+# everything the agent needs so the analyser can see it, but naming them here
+# as well costs nothing and survives someone editing that list out.
+$hidden = @(
+    'argparse', 'dataclasses', 'hashlib', 'json', 'logging', 'os', 'pathlib',
+    'platform', 're', 'shutil', 'signal', 'subprocess', 'tempfile', 'time',
+    'typing', 'urllib.error', 'urllib.parse', 'urllib.request'
+)
+$hiddenArgs = @()
+foreach ($module in $hidden) { $hiddenArgs += @('--hidden-import', $module) }
+
 Info "Building $OutputName.exe..."
 & $python.Source -m PyInstaller `
     --noconfirm --clean --onefile $windowFlag `
     --name $OutputName `
     --add-data $addData `
+    @hiddenArgs `
     --distpath (Join-Path $here 'dist') `
     --workpath (Join-Path $here 'build') `
     --specpath $here `

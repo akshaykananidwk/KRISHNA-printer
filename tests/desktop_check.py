@@ -82,6 +82,33 @@ def wait_for(root, predicate, seconds: float = 20.0) -> bool:
     return False
 
 
+def agent_imports_are_visible() -> tuple[bool, str]:
+    """
+    Every module kpms-agent.py imports must also be imported by the window.
+
+    The agent is loaded at runtime by path, so a packager analysing imports
+    statically cannot see inside it. The first build started and immediately
+    died with "No module named 'platform'". Naming them in kpms_desktop.py puts
+    them in the import graph; this check is what stops that list rotting as the
+    agent changes.
+    """
+    import ast
+
+    def top_level(path: Path) -> set[str]:
+        modules: set[str] = set()
+        for node in ast.parse(path.read_text()).body:
+            if isinstance(node, ast.Import):
+                modules |= {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                modules.add(node.module.split(".")[0])
+        return modules
+
+    needed = top_level(ROOT / "agent" / "kpms-agent.py") - {"__future__"}
+    present = top_level(APP)
+    missing = sorted(needed - present)
+    return not missing, ", ".join(missing)
+
+
 def main() -> int:
     server, token = sys.argv[1], sys.argv[2]
 
@@ -97,6 +124,11 @@ def main() -> int:
 
     root = tk.Tk()
     app = desktop.DesktopApp(root)
+
+    print("Packaging")
+    visible, missing = agent_imports_are_visible()
+    check("every module the agent needs is visible to the packager", visible,
+          f"not imported by the window: {missing}")
 
     print("Window")
     check("the window builds", root.title().startswith("Krishna Printer"))

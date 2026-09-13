@@ -33,6 +33,30 @@ import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
+# Everything kpms-agent.py imports, imported here too.
+#
+# The agent is loaded at runtime by path, so a packager analysing imports
+# statically never sees inside it: PyInstaller built an executable that started
+# and then died with "No module named 'platform'", because nothing in the
+# import graph it could see mentioned platform. Naming them here puts them in
+# the graph. tests/desktop_check.py fails if this list and the agent's real
+# imports ever drift apart, so it cannot rot quietly.
+import argparse          # noqa: F401
+import dataclasses       # noqa: F401
+import hashlib           # noqa: F401
+import logging           # noqa: F401
+import platform          # noqa: F401
+import re                # noqa: F401
+import shutil            # noqa: F401
+import signal            # noqa: F401
+import subprocess        # noqa: F401
+import tempfile          # noqa: F401
+import time              # noqa: F401
+import typing            # noqa: F401
+import urllib.error      # noqa: F401
+import urllib.parse      # noqa: F401
+import urllib.request    # noqa: F401
+
 APP_NAME = "Krishna Printer"
 APP_VERSION = "1.0.0"
 

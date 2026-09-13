@@ -45,6 +45,25 @@ in becomes a runtime dependency.
 | **SumatraPDF** | Required. Windows cannot print a PDF from a script without it. `winget install --id SumatraPDF.SumatraPDF` |
 | **LibreOffice** | Required for Word, Excel, PowerPoint, images and plain text — everything that is not already a PDF. `winget install --id TheDocumentFoundation.LibreOffice` |
 
+## If the built .exe will not start
+
+A packager reads imports statically, and the agent is loaded at runtime by
+path - so nothing in the import graph mentions what the agent needs, and the
+first build died on launch with `No module named 'platform'`.
+
+`kpms_desktop.py` therefore imports everything the agent imports, and
+`build.ps1` names them again as hidden imports. A check in
+`tests/desktop_check.py` fails if that list and the agent's real imports ever
+drift apart.
+
+If a build still will not start, build it with a console attached so it can
+say why:
+
+```powershell
+.\build.ps1 -KeepConsole
+.\dist\KrishnaPrinter.exe
+```
+
 ## Model profiles
 
 The printer's own driver is asked what it can do, and that is what the list
