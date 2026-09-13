@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Checks for the agent's Windows printing backend.
+Checks for the location print agent.
 
-The backend itself cannot be exercised from Linux — there is no Windows print
-spooler here to drive. What can be checked, and is checked here, is everything
-that decides whether it behaves correctly once it is on Windows:
+Most of this covers the Windows printing backend, which cannot be exercised
+from Linux — there is no Windows print spooler here to drive. What can be
+checked, and is checked here, is everything that decides whether it behaves
+correctly once it is on Windows:
 
   * the CUPS options the server sends are translated into Windows queue
     settings and SumatraPDF arguments without losing any of them,
@@ -14,6 +15,9 @@ that decides whether it behaves correctly once it is on Windows:
   * a printer name containing a quote cannot break out of the PowerShell
     string it is interpolated into,
   * and the embedded PowerShell actually parses (when pwsh is available).
+
+Plus the parts of the agent that are not platform-specific at all, such as
+noticing a printer that was assigned to it after it started.
 
 Exits 0 when every check passes, 1 otherwise.
 """
@@ -230,6 +234,53 @@ def main() -> int:
           "UTF8Encoding $false" in installer_text
           and "Set-Content -Path $configPath -Encoding UTF8" not in installer_text,
           "install.ps1 still uses Set-Content -Encoding UTF8")
+
+    # --- Printer list refresh ----------------------------------------------
+    print("Printer assignment")
+
+    class FakeApi:
+        def __init__(self, printers, error=None):
+            self.printers = printers
+            self.error = error
+            self.calls = 0
+
+        def config_call(self):
+            self.calls += 1
+            if self.error:
+                raise self.error
+            return {"printers": self.printers}
+
+    class Bare(agent.Agent):
+        def __init__(self):            # no config, no network, no work dir
+            self.printers = []
+            self.capabilities_reported = set()
+            self.api = None
+
+    # A printer added in the admin panel after the agent started must be
+    # picked up. It used to be fetched once at startup, so the operator saw
+    # "connected but has not yet reported this printer's state" indefinitely.
+    a = Bare()
+    a.api = FakeApi([{"code": "office-01"}])
+    a.refresh_printers()
+    check("a newly assigned printer is picked up",
+          [p["code"] for p in a.printers] == ["office-01"], f"got {a.printers}")
+
+    # A momentary API failure must not take working printers out of service.
+    a.api = FakeApi([], error=agent.ApiError("server down"))
+    a.refresh_printers()
+    check("a failed refresh keeps the printers it already had",
+          [p["code"] for p in a.printers] == ["office-01"], f"got {a.printers}")
+
+    # A printer taken away is dropped, and will re-report its capabilities if
+    # it comes back, since the queue behind it may have changed.
+    a.capabilities_reported.add("office-01")
+    a.api = FakeApi([])
+    a.refresh_printers()
+    check("an unassigned printer is dropped",
+          a.printers == [], f"got {a.printers}")
+    check("its capabilities are re-reported if it returns",
+          "office-01" not in a.capabilities_reported,
+          f"got {a.capabilities_reported}")
 
     # --- The installer script itself ---------------------------------------
     print("install.ps1 encoding")

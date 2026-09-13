@@ -2378,14 +2378,14 @@ $runner->test('TG.1', 'The options sent to an agent carry the copies the custome
     );
 });
 
-$runner->test('TG.2', 'The Windows agent translates those options without losing any', 'every option carried or reported', function () use ($basePath) {
+$runner->test('TG.2', 'The agent handles its options, its printers and its own config correctly', 'every agent check passes', function () use ($basePath) {
     // The Windows print backend cannot be driven from here — there is no
     // Windows spooler to talk to — so what is checked is everything that
     // decides whether it behaves once it is there: the option translation, the
     // printer-state mapping, and the safety of the PowerShell it builds.
-    $script = $basePath . '/tests/windows_agent_check.py';
+    $script = $basePath . '/tests/agent_check.py';
     if (!is_file($script)) {
-        return ['pass' => false, 'actual' => 'tests/windows_agent_check.py is missing.'];
+        return ['pass' => false, 'actual' => 'tests/agent_check.py is missing.'];
     }
 
     $descriptors = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];

@@ -984,7 +984,39 @@ class Agent:
         if job:
             self.process(job)
 
+    def refresh_printers(self) -> None:
+        """
+        Re-read which printers this agent is responsible for.
+
+        The list used to be fetched once at startup, so a printer added in the
+        admin panel was invisible to an agent already running: the operator saw
+        "the print agent is connected but has not yet reported this printer's
+        state" forever, and nothing but a restart fixed it. Adding a printer is
+        the normal way to set one up, so the agent has to notice.
+        """
+        try:
+            configuration = self.api.config_call()
+        except ApiError as error:
+            # Keep the current list and try again next time: a momentary
+            # failure here must not take working printers out of service.
+            log.warning("Could not refresh the printer list: %s", error)
+            return
+
+        previous = {printer["code"] for printer in self.printers}
+        self.printers = configuration.get("printers", [])
+        current = {printer["code"] for printer in self.printers}
+
+        for code in sorted(current - previous):
+            log.info("Printer %s is now assigned to this agent", code)
+        for code in sorted(previous - current):
+            log.info("Printer %s is no longer assigned to this agent", code)
+            # Its capabilities are re-reported if it comes back, since the
+            # queue behind it may have changed in the meantime.
+            self.capabilities_reported.discard(code)
+
     def send_heartbeat(self) -> None:
+        self.refresh_printers()
+
         reports = []
 
         for printer in self.printers:
