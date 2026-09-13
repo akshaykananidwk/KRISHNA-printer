@@ -54,7 +54,7 @@ abstract class Controller
     protected function back(Request $request, string $flashType = '', string $flashMessage = ''): Response
     {
         $referer = (string) $request->header('Referer', '');
-        $target = '/';
+        $target = $this->sectionRoot($request);
 
         // Only follow a same-origin referer — never redirect a user to a URL an
         // attacker put in a header.
@@ -62,11 +62,34 @@ abstract class Controller
             $parts = parse_url($referer);
             $host = $parts['host'] ?? '';
             if ($host === '' || $host === explode(':', $request->host())[0]) {
-                $target = ($parts['path'] ?? '/') . (isset($parts['query']) ? '?' . $parts['query'] : '');
+                $target = ($parts['path'] ?? $target) . (isset($parts['query']) ? '?' . $parts['query'] : '');
             }
         }
 
         return $this->redirect($target, $flashType, $flashMessage);
+    }
+
+    /**
+     * Where "back" goes when there is no usable Referer.
+     *
+     * The section the request came from, not the site root. A referer is
+     * missing more often than it looks — a privacy extension, a strict
+     * referrer policy, some API clients — and sending an operator from a
+     * failed save on /admin/system to the public front page loses both their
+     * place and the message telling them what went wrong. That message is the
+     * whole point of the redirect.
+     */
+    private function sectionRoot(Request $request): string
+    {
+        $path = $request->path();
+
+        if (str_starts_with($path, '/admin')) {
+            return '/admin/dashboard';
+        }
+        if (str_starts_with($path, '/partner') || str_starts_with($path, '/register')) {
+            return '/partner';
+        }
+        return '/';
     }
 
     protected function isAdmin(Request $request): bool

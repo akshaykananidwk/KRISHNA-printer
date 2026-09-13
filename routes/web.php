@@ -16,6 +16,7 @@ declare(strict_types=1);
 use App\Http\Controllers\Admin;
 use App\Http\Controllers\Api;
 use App\Http\Controllers\Customer;
+use App\Http\Controllers\HomeController;
 use App\Http\Controllers\InstallController;
 use App\Http\Controllers\PartnerController;
 
@@ -49,11 +50,13 @@ $router->get('/up', Api\HealthController::class . '@check');
 // ---------------------------------------------------------------------
 $router->group(['middleware' => ['install_guard', 'maintenance', 'https', 'session', 'security_headers', 'rate_limit']], function ($router): void {
 
-    $router->get('/', function (\App\Core\Request $request): \App\Core\Response {
-        // The site root is not a customer entry point — customers arrive via
-        // a QR link. Send anyone else to the admin sign-in.
-        return \App\Core\Response::redirect('/admin/login');
-    });
+    // The front page. Customers still arrive by QR and never see this, but
+    // everyone else who types the domain does: a shop owner deciding whether
+    // to join, an office wondering what the printer in the corner is doing,
+    // the operator on the way to the panel. It used to redirect straight to
+    // the admin sign-in, which told none of them anything and offered two of
+    // them an account they do not have.
+    $router->get('/', HomeController::class . '@index')->name('home');
 
     $router->get('/print/status/{printer:\d+}', Customer\PrintController::class . '@printerStatus');
     $router->get('/print/files', Customer\UploadController::class . '@listFiles');

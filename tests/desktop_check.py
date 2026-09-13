@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -82,6 +83,19 @@ def wait_for(root, predicate, seconds: float = 20.0) -> bool:
     return False
 
 
+def top_level(path: Path) -> set[str]:
+    """The modules a file imports at its top level."""
+    import ast
+
+    modules: set[str] = set()
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Import):
+            modules |= {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            modules.add(node.module.split(".")[0])
+    return modules
+
+
 def agent_imports_are_visible() -> tuple[bool, str]:
     """
     Every module kpms-agent.py imports must also be imported by the window.
@@ -92,17 +106,6 @@ def agent_imports_are_visible() -> tuple[bool, str]:
     them in the import graph; this check is what stops that list rotting as the
     agent changes.
     """
-    import ast
-
-    def top_level(path: Path) -> set[str]:
-        modules: set[str] = set()
-        for node in ast.parse(path.read_text()).body:
-            if isinstance(node, ast.Import):
-                modules |= {alias.name.split(".")[0] for alias in node.names}
-            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
-                modules.add(node.module.split(".")[0])
-        return modules
-
     needed = top_level(ROOT / "agent" / "kpms-agent.py") - {"__future__"}
     present = top_level(APP)
     missing = sorted(needed - present)
@@ -176,6 +179,99 @@ def main() -> int:
           tabs == ["Connection", "Printers", "Activity"], f"got {tabs}")
     check("printing cannot be started before connecting",
           str(app.start_btn.cget("state")) == "disabled")
+
+    print("Packaging for Windows")
+
+    # None of this can be run here - there is no Windows - so what is checked
+    # is everything that decides whether it works when it is.
+    bat = ROOT / "agent" / "desktop" / "build.bat"
+    ps1 = ROOT / "agent" / "desktop" / "build.ps1"
+    iss = ROOT / "agent" / "desktop" / "installer.iss"
+
+    check("there is a build file that can be double-clicked", bat.is_file())
+    check("and a setup script for the wizard", iss.is_file())
+
+    bat_bytes = bat.read_bytes()
+    # cmd.exe reads a .bat as the machine's ANSI code page, and a stray
+    # non-ASCII byte in a label or a quoted string is a parse error rather than
+    # a wrong character. install.ps1 was bitten by exactly this once already.
+    try:
+        bat_bytes.decode("ascii")
+        ascii_only = True
+    except UnicodeDecodeError:
+        ascii_only = False
+    check("build.bat is plain ASCII", ascii_only)
+    check("build.bat uses CRLF line endings",
+          b"\r\n" in bat_bytes and b"\n" not in bat_bytes.replace(b"\r\n", b""),
+          "a .bat with bare LF can break goto and labels")
+
+    bat_text = bat_bytes.decode("ascii")
+
+    # Every label the script jumps to must exist. A goto to a missing label
+    # does not stop the script - it ends it, silently, mid-build.
+    targets = set(re.findall(r"(?:goto|call)\s+:(\w+)", bat_text))
+    labels = set(re.findall(r"^:(\w+)", bat_text, re.MULTILINE))
+    check("every label build.bat jumps to exists",
+          targets <= labels, f"missing: {sorted(targets - labels)}")
+
+    # It must install what is missing rather than only complaining about it.
+    check("it installs Python when there is none",
+          "Python.Python" in bat_text and "python.org/ftp/python" in bat_text,
+          "no winget id and no direct download")
+    check("and puts Python on PATH, or the build cannot find it",
+          "PrependPath=1" in bat_text)
+    check("and installs Inno Setup for the wizard",
+          "JRSoftware.InnoSetup" in bat_text)
+    check("nothing asks for Administrator",
+          "--scope user" in bat_text and "InstallAllUsers=0" in bat_text)
+    check("it does not leave a closed window on failure",
+          bat_text.count("pause") >= 2, "a failure with no pause vanishes before it can be read")
+
+    # The packager list lives in build.ps1 alone. A second copy in build.bat
+    # would drift, and the symptom of drift is an .exe that dies on launch.
+    ps1_text = ps1.read_text()
+    check("the packager list is in one place only",
+          "--hidden-import" not in bat_text and "--hidden-import" in ps1_text,
+          "build.bat has its own copy of the hidden imports")
+    check("build.bat delegates the build to build.ps1",
+          "build.ps1" in bat_text)
+
+    needed = top_level(ROOT / "agent" / "kpms-agent.py") - {"__future__"}
+    named = set(re.findall(r"'([A-Za-z_][\w.]*)'", ps1_text))
+    missing_hidden = sorted(m for m in needed if m not in named)
+    check("every module the agent needs is named to the packager",
+          not missing_hidden, f"not in build.ps1: {missing_hidden}")
+    for module in ("ctypes.wintypes", "winreg"):
+        check(f"{module} is named too, since it is imported inside a function",
+              module in named, "a packager can miss an import that is not at the top of a file")
+
+    iss_text = iss.read_text()
+    check("the wizard installs the executable the build produces",
+          "KrishnaPrinter.exe" in iss_text)
+    check("it has a fixed AppId, so a second install is an upgrade",
+          re.search(r"^AppId=\{\{[0-9A-Fa-f-]{36}\}", iss_text, re.MULTILINE) is not None,
+          "without a stable AppId every version installs alongside the last")
+    check("it can install silently, which is what the updater needs",
+          "skipifsilent" in iss_text,
+          "an unattended update must not pop a window over somebody's work")
+    check("it closes the running app first",
+          "CloseApplications=yes" in iss_text,
+          "Windows cannot replace a running .exe")
+
+    # The installer's startup tick and the app's own checkbox must write the
+    # same registry value, or the two disagree about whether it is on.
+    run_key = re.search(r'Subkey: "([^"]+)"', iss_text)
+    check("the wizard's startup tick writes the key the app reads",
+          run_key is not None and run_key.group(1) == desktop.AUTOSTART_KEY,
+          f"iss={run_key.group(1) if run_key else None} app={desktop.AUTOSTART_KEY}")
+    check("and with the same hidden switch",
+          "--hidden" in iss_text and "--hidden" in desktop.autostart_command())
+
+    # One version number for the product. The installer is stamped from it and
+    # the updater compares against it.
+    check("the installer takes its version from the application",
+          "APP_VERSION" in ps1_text and "AppVersion" in iss_text,
+          "a second copy of the version is one more thing to forget")
 
     print("Running in the background")
 

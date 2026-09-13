@@ -2765,6 +2765,61 @@ $runner->test('TL.4', 'RAW/9100 does not claim a job printed', 'delivery confirm
     );
 });
 
+$runner->test('TH.2', 'A failed admin save stays in the admin panel', 'the reason is shown, not lost', function () use ($baseUrl, $adminClient) {
+    // "Back" falls back to a section root when there is no Referer, and a
+    // referer is missing more often than it looks. It used to fall back to the
+    // site root, which redirected to the admin sign-in and rendered the flash
+    // there by luck; with a real front page at the root, that luck ran out and
+    // the operator got a marketing page with no message on it.
+    $adminClient->get('/admin/system');
+    $response = $adminClient->submitForm('/admin/system/update-config', [
+        'repository' => 'octocat/definitely-not-a-real-repo-' . bin2hex(random_bytes(6)),
+        'branch' => 'main',
+        'token' => 'ghp_definitely_invalid_token_value_here',
+    ]);
+
+    $landedOnFrontPage = str_contains($response['body'], 'Who it is for');
+    $toldWhy = str_contains($response['body'], 'GitHub rejected')
+        || str_contains($response['body'], 'not found')
+        || str_contains($response['body'], 'token was rejected');
+
+    return TestRunner::assertTrue(
+        !$landedOnFrontPage && $toldWhy,
+        'Stayed inside the panel and said why the save failed.',
+        sprintf('front_page=%s told_why=%s', json_encode($landedOnFrontPage), json_encode($toldWhy))
+    );
+});
+
+$runner->test('TH.1', 'The front page explains the product to someone with no account', 'readable signed out, and honest', function () use ($baseUrl) {
+    $visitor = new HttpClient($baseUrl);
+    $page = $visitor->get('/');
+    $body = $page['body'];
+
+    // It must be readable without signing in - the root used to redirect to
+    // the admin login, which is a box for an account a shop owner has not got.
+    $reachable = $page['status'] === 200;
+
+    $explains = str_contains($body, 'How it works')
+        && str_contains($body, 'Who it is for')
+        && str_contains($body, 'What it does not do');
+
+    $routesIn = str_contains($body, 'href="/register"')
+        && str_contains($body, 'href="/partner/login"')
+        && str_contains($body, 'href="/admin/login"');
+
+    // The one claim that would be a lie: paying each shop separately at the
+    // gateway is not built, so the page must say so rather than imply it.
+    $honest = str_contains($body, 'not part of this yet');
+
+    return TestRunner::assertTrue(
+        $reachable && $explains && $routesIn && $honest,
+        'Served to a signed-out visitor with how it works, who it suits, what it will not do, the '
+        . 'three ways in, and the gateway limitation stated rather than glossed over.',
+        sprintf('status=%d explains=%s links=%s honest=%s',
+            $page['status'], json_encode($explains), json_encode($routesIn), json_encode($honest))
+    );
+});
+
 $runner->group('Shop self-registration');
 
 $registrationEmail = 'ramesh' . bin2hex(random_bytes(3)) . '@shop.test';

@@ -6,8 +6,8 @@ Krishna Printer — Commercial Multi-Location Cloud Printing Management System
 
 | | |
 |---|---|
-| Run at | 2026-09-13 18:02:59 UTC |
-| Duration | 12.35 seconds |
+| Run at | 2026-09-13 19:16:13 UTC |
+| Duration | 16.42 seconds |
 | PHP | 8.4.25 |
 | Database | 10.11.14-MariaDB-0ubuntu0.24.04.1 |
 | Application under test | http://127.0.0.1:8088 |
@@ -15,7 +15,7 @@ Krishna Printer — Commercial Multi-Location Cloud Printing Management System
 
 ## Result
 
-**125 passed · 0 failed · 0 skipped** of 125 checks.
+**127 passed · 0 failed · 0 skipped** of 127 checks.
 
 Every check passed in this run.
 
@@ -90,10 +90,10 @@ restore were executed against it.
 | T23.2 | Security headers are present on every response | CSP, nosniff, frame-options | CSP with a per-request nonce and no unsafe-inline; nosniff, DENY and referrer-policy all set. | **PASS** |
 | T23.3 | SQL injection in a search field is neutralised | the query is treated as text | HTTP 200 and print_jobs still exists — the payload was bound as a parameter. | **PASS** |
 | T23.4 | XSS in a stored field is escaped on output | the script tag is encoded | The payload was stored and rendered as escaped text, not as markup. | **PASS** |
-| T23.5 | Secrets are encrypted at rest | ciphertext, not the plaintext value | Stored as sod1:Yhw26qQ… — the plaintext does not appear in the database. | **PASS** |
+| T23.5 | Secrets are encrypted at rest | ciphertext, not the plaintext value | Stored as sod1:nV9YfVS… — the plaintext does not appear in the database. | **PASS** |
 | T23.6 | A stored secret is never echoed back to the browser | the settings page shows no plaintext | The settings form shows only a "stored" placeholder. | **PASS** |
 | T23.7 | Uploads are stored outside the web root | not reachable over HTTP | uploads/, storage/, config/, logs/ and app/ are all outside the document root and unreachable. | **PASS** |
-| T23.8 | The rate limiter blocks a burst of requests | HTTP 429 once the limit is passed | HTTP 429 returned after 281 requests from one address, once the 300-per-minute limit was crossed. | **PASS** |
+| T23.8 | The rate limiter blocks a burst of requests | HTTP 429 once the limit is passed | HTTP 429 returned after 294 requests from one address, once the 300-per-minute limit was crossed. | **PASS** |
 
 ### Printers and capabilities (tests 3, 11-13)
 
@@ -117,12 +117,12 @@ restore were executed against it.
 |---|------|----------|--------|--------|
 | T1.1 | Scanning the QR opens the print page for the right location | HTTP 200 naming the location | HTTP 200; the page identified "Test Branch" and its printer. | **PASS** |
 | T2.1 | A QR token that does not match is rejected | HTTP 404, no location leaked | HTTP 404 with a generic message; the location name is not disclosed. | **PASS** |
-| T2.2 | The QR token is stored only as a hash | no plaintext token in the database | Only the SHA-256 hash is stored (hint: 8dfdd1ce…). A stolen database dump yields no working QR link. | **PASS** |
+| T2.2 | The QR token is stored only as a hash | no plaintext token in the database | Only the SHA-256 hash is stored (hint: e9669eed…). A stolen database dump yields no working QR link. | **PASS** |
 | T3.4 | The page reports the printer as online | the status endpoint says available | Available; status=online | **PASS** |
 | T5.1 | A PDF uploads and its page count is read exactly | 12 pages, parsed | Uploaded; 12 pages read from the PDF page tree (source: parsed). | **PASS** |
 | T5.2 | A file with a disallowed extension is refused | rejected before storage | Refused: "malicious.php" is not a supported file type. Accepted: PDF, JPG, JPEG, PNG, DOC, DOCX, XLS, XLSX, PPT, PPTX. | **PASS** |
 | T5.3 | A file whose contents contradict its extension is refused | MIME/magic mismatch caught | Refused: "disguised.pdf" does not appear to be a valid PDF file (its content is text/x-php). | **PASS** |
-| T5.4 | Stored files get a random name, not the uploaded one | no original filename on disk | Original "twelve-pages.pdf" stored as "7e1ae345c5abbff1714dddf37820b54cfcd0aa3b.pdf" — the uploaded name never touches the filesystem path. | **PASS** |
+| T5.4 | Stored files get a random name, not the uploaded one | no original filename on disk | Original "twelve-pages.pdf" stored as "16b969e14318405d0771a4577e01212300c74fb3.pdf" — the uploaded name never touches the filesystem path. | **PASS** |
 | T6.1 | Multiple files upload in one order | both accepted with correct page counts | 2 files accepted with page counts 3, 7. | **PASS** |
 
 ### Pricing and page ranges (tests 7, 14)
@@ -157,14 +157,14 @@ restore were executed against it.
 
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
-| T17.1 | A job is created and queued | a job number is issued | Job created; payment_required=false, redirect=/print/success/666193b7d7fe6743ea05b59242f5d2b4 | **PASS** |
+| T17.1 | A job is created and queued | a job number is issued | Job created; payment_required=false, redirect=/print/success/60a632f7499a68a7102959835e560889 | **PASS** |
 | T14.4 | The customer is shown a job number | the receipt names it | The receipt shows "Print Job #AK100001" and the confirmation message. | **PASS** |
 | T8.1 | The job records the settings the customer chose | B&W, A4, 2 copies, pages 1-5 | bw, A4, 2 copies, pages 1-5 → 5 selected, 10 billable, ₹20.00. | **PASS** |
-| T17.2 | The worker sends the job to the printer over IPP | the printer accepts it | Status "completed", printer job id 7. Worker output: 18:02:51 [sent] AK100001 — Printer accepted the job (IPP job 7). \| 18:02:51 Reconciled: 1 completed, 0 failed of 1 checked \| 18:02:51 Worker finished: 1 job(s) in 0 second(s) | **PASS** |
+| T17.2 | The worker sends the job to the printer over IPP | the printer accepts it | Status "completed", printer job id 8. Worker output: 19:16:02 [sent] AK100001 — Printer accepted the job (IPP job 8). \| 19:16:02 Reconciled: 1 completed, 0 failed of 1 checked \| 19:16:02 Worker finished: 1 job(s) in 0 second(s) | **PASS** |
 | T17.3 | The print options actually reached the printer | IPP attributes match the job | The printer received copies=2, media=iso_a4_210x297mm, sides=one-sided, colour=monochrome, 4005 bytes total. | **PASS** |
 | T17.4 | A page range is sent as an IPP page-ranges attribute | pages 1-5 in the job ticket | page-ranges = {"lower":1,"upper":5} — the range travelled to the printer as a rangeOfInteger, not just as a billing figure. | **PASS** |
 | T12.1 | The admin job list shows the job | the job number appears | The job list shows AK100001. | **PASS** |
-| T10.1 | A4 printing works end to end | the job completed on A4 | Completed on A4 at 2026-09-13 18:02:51 UTC. | **PASS** |
+| T10.1 | A4 printing works end to end | the job completed on A4 | Completed on A4 at 2026-09-13 19:16:02 UTC. | **PASS** |
 
 ### Failure, retry and cancellation (tests 18-20)
 
@@ -207,8 +207,8 @@ restore were executed against it.
 
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
-| T25.1 | A database backup is created and is restorable | a verified, non-trivial dump | Backup db-20260913-180252-fbd2064c.sql.gz: 12,102 bytes, checksum verified, contains CREATE TABLE for print_jobs. | **PASS** |
-| T25.2 | An application backup is created | a zip containing the code | Application backup app-20260913-180253-39bca8b7.zip contains the code and correctly excludes customer uploads. | **PASS** |
+| T25.1 | A database backup is created and is restorable | a verified, non-trivial dump | Backup db-20260913-191603-49da2508.sql.gz: 12,114 bytes, checksum verified, contains CREATE TABLE for print_jobs. | **PASS** |
+| T25.2 | An application backup is created | a zip containing the code | Application backup app-20260913-191604-32d4d64a.zip contains the code and correctly excludes customer uploads. | **PASS** |
 | T25.3 | A database restore actually restores | a deleted row comes back | A row added after the backup was gone after the restore — the dump genuinely replaced the database rather than merely being written to disk. | **PASS** |
 | T26.1 | The update module reports when it is unconfigured | a clear message, no crash | Reports "Updates are not configured yet." rather than failing obscurely. | **PASS** |
 | T26.2 | Bad GitHub credentials are rejected at save time | the operator finds out immediately | The credentials were verified against GitHub before being stored, and the failure was reported at save time rather than during an update. | **PASS** |
@@ -224,7 +224,7 @@ restore were executed against it.
 |---|------|----------|--------|--------|
 | T29.1 | The customer page is mobile-first | viewport, 16px inputs, 48px targets | Viewport meta present; 16px inputs (no iOS zoom-on-focus); 48px minimum tap targets; min-width media queries (mobile-first, not desktop-down); reduced-motion respected. | **PASS** |
 | T29.2 | The admin panel adapts to a phone | drawer nav and stacked tables | The sidebar collapses to a drawer below 60rem, and data tables restack as labelled cards below 45rem rather than scrolling sideways. | **PASS** |
-| T29.3 | The QR code is genuinely scannable | decodes back to the print URL | Version 7 QR (45×45 modules) rendered as a 2,422 byte PNG. Independently decoded with OpenCV during development. | **PASS** |
+| T29.3 | The QR code is genuinely scannable | decodes back to the print URL | Version 7 QR (45×45 modules) rendered as a 2,433 byte PNG. Independently decoded with OpenCV during development. | **PASS** |
 
 ### Scale to 50+ locations (test 30)
 
@@ -233,9 +233,9 @@ restore were executed against it.
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
 | T30.1 | 50 locations and 50 printers are created | all rows present | 50 locations and 50 printers created for the scale test. | **PASS** |
-| T30.2 | Dashboard aggregates stay fast at scale | under 500 ms | Dashboard rendered in 6 ms with 50+ locations and printers. | **PASS** |
-| T30.3 | The location list pages rather than loading everything | bounded page size | 25 of 52 locations rendered (paged at 25) in 4 ms. | **PASS** |
-| T30.4 | Health checks across 50+ printers complete promptly | a bounded batch | Completed in 39 ms — 18:02:55 [printer_health] checked 0 — 0 online, 0 not (2 ms) | **PASS** |
+| T30.2 | Dashboard aggregates stay fast at scale | under 500 ms | Dashboard rendered in 11 ms with 50+ locations and printers. | **PASS** |
+| T30.3 | The location list pages rather than loading everything | bounded page size | 25 of 52 locations rendered (paged at 25) in 6 ms. | **PASS** |
+| T30.4 | Health checks across 50+ printers complete promptly | a bounded batch | Completed in 50 ms — 19:16:06 [printer_health] checked 0 — 0 online, 0 not (2 ms) | **PASS** |
 | T30.5 | Reporting queries stay indexed at scale | no full table scans on the job index | The reporting query uses an index (print_jobs carries 15 indexes, including a composite on created_at/location_id/color_mode/paper_size). | **PASS** |
 
 ### Reporting and export (test 13)
@@ -274,12 +274,12 @@ restore were executed against it.
 | TG.4 | A test page prints on a printer with nothing verified yet | not blocked by capability checks | 0 capabilities verified on this printer, and the test page still queued as AK100005. | **PASS** |
 | TG.5 | A printer can be removed from the admin panel | the control exists and works | The printer page offers Delete printer, and using it removes the printer. | **PASS** |
 | TG.6 | A printer with work in progress is not deleted out from under it | refused, with the count | Refused while a job was queued on it, so the job keeps the printer it belongs to. | **PASS** |
-| TD.1 | The agent API registers a printer for the agent that asked | created once, scoped to that device | Created as desk-printer-8f80 on the agent transport, bound to its own device and location; re-registering updated it instead of adding a second printer. | **PASS** |
-| TD.2 | The desktop window connects, lists printers and registers one | driven for real, headlessly | 40 passed, 0 failed | **PASS** |
+| TD.1 | The agent API registers a printer for the agent that asked | created once, scoped to that device | Created as desk-printer-fafe on the agent transport, bound to its own device and location; re-registering updated it instead of adding a second printer. | **PASS** |
+| TD.2 | The desktop window connects, lists printers and registers one | driven for real, headlessly | 62 passed, 0 failed | **PASS** |
 
 ### Transport limitations are enforced, not hidden
 
-4 passed, 0 failed.
+6 passed, 0 failed.
 
 | # | Test | Expected | Actual | Result |
 |---|------|----------|--------|--------|
@@ -287,6 +287,8 @@ restore were executed against it.
 | TL.2 | RAW/9100 admits it cannot report capabilities | unsupported, not a guess | Reports unsupported with the reason "RAW/9100 is a one-way byte stream and has no capability-query mechanism. Probe this printer over IPP, or have " rather than inventing a capability list. | **PASS** |
 | TL.3 | RAW/9100 refuses options it cannot carry | copies and duplex are rejected | Refused: "RAW/9100 carries no job ticket, so it cannot apply: 3 copies, double-sided printing. Use a location agent or IPP for jobs that need print options." — rather than dropping the options and printing something the customer did not order. | **PASS** |
 | TL.4 | RAW/9100 does not claim a job printed | delivery confirmed, rendering not | Accepted but NOT confirmed: "Sent 14 bytes to 127.0.0.1:19100. RAW/9100 returns no acknowledgement, so delivery to the printer is confirmed but rendering is not." — the socket write succeeded, which is all a byte pipe can tell you. | **PASS** |
+| TH.2 | A failed admin save stays in the admin panel | the reason is shown, not lost | Stayed inside the panel and said why the save failed. | **PASS** |
+| TH.1 | The front page explains the product to someone with no account | readable signed out, and honest | Served to a signed-out visitor with how it works, who it suits, what it will not do, the three ways in, and the gateway limitation stated rather than glossed over. | **PASS** |
 
 ### Shop self-registration
 
@@ -298,7 +300,7 @@ restore were executed against it.
 | TP.2 | The password is stored hashed and must survive the policy | no plaintext, no guessable password | Stored as $argon2… and verifiable; "password1" was refused by the policy and a mistyped confirmation was refused too. | **PASS** |
 | TP.3 | A registration cannot approve itself | approval is the operator's, and authenticated | Refused with HTTP 401 and the shop is still pending. | **PASS** |
 | TP.4 | Approving creates the location and the print agent | one transaction, both or neither | Location "Ramesh's Xerox & Stationery" (code ramesh-s-xerox-stationery) and print agent "Ramesh's Xerox & Stationery counter" created together; the QR token is stored only as a hash. | **PASS** |
-| TP.5 | The shop signs in and issues its own agent token | a working token, nobody read it aloud | Token kpms_H5Nhtp8… works against the agent API as "Ramesh's Xerox & Stationery counter", is stored only as a SHA-256 hash, and is not shown again on the next page load. | **PASS** |
+| TP.5 | The shop signs in and issues its own agent token | a working token, nobody read it aloud | Token kpms_i3f93ZO… works against the agent API as "Ramesh's Xerox & Stationery counter", is stored only as a SHA-256 hash, and is not shown again on the next page load. | **PASS** |
 | TP.6 | Issuing a replacement retires the old token | one live token per shop | The replacement works (HTTP 200) and the one it replaced does not (HTTP 401). | **PASS** |
 | TP.7 | One shop cannot reach another shop's page | the session decides, not the URL | Signed out the page redirects to the sign-in; signed in it shows only that shop; and a shop still waiting for approval is refused a token. | **PASS** |
 
@@ -342,4 +344,4 @@ exercised it.
 
 ---
 
-_Generated by `tests/run.php` on 2026-09-13 18:02:59 UTC. Re-run with `php tests/run.php`._
+_Generated by `tests/run.php` on 2026-09-13 19:16:13 UTC. Re-run with `php tests/run.php`._
