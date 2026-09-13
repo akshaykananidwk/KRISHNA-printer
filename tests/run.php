@@ -2495,6 +2495,66 @@ $runner->test('TG.4', 'A test page prints on a printer with nothing verified yet
     );
 });
 
+$runner->test('TG.5', 'A printer can be removed from the admin panel', 'the control exists and works', function () use ($adminClient, $connectDb) {
+    // The route and the controller action had existed all along; the button
+    // did not, so a printer simply could not be deleted through the interface.
+    $db = $connectDb();
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+    $printerId = (int) $db->insert('printers', [
+        'location_id' => $locationId,
+        'name' => 'Disposable printer',
+        'code' => 'disposable-' . bin2hex(random_bytes(3)),
+        'capability_profile' => 'generic',
+        'status' => 'unknown',
+        'is_enabled' => 1,
+    ]);
+
+    $page = $adminClient->get('/admin/printers/' . $printerId);
+    $hasControl = str_contains($page['body'], 'Delete printer');
+
+    $adminClient->submitForm('/admin/printers/' . $printerId, ['_method' => 'DELETE']);
+
+    $deletedAt = $db->scalar('SELECT deleted_at FROM printers WHERE id = ?', [$printerId]);
+    $listed = (int) $db->scalar(
+        'SELECT COUNT(*) FROM printers WHERE id = ? AND deleted_at IS NULL',
+        [$printerId]
+    );
+
+    return TestRunner::assertTrue(
+        $hasControl && $deletedAt !== null && $listed === 0,
+        'The printer page offers Delete printer, and using it removes the printer.',
+        sprintf('control present=%s, deleted_at=%s', $hasControl ? 'yes' : 'no', var_export($deletedAt, true))
+    );
+});
+
+$runner->test('TG.6', 'A printer with work in progress is not deleted out from under it', 'refused, with the count', function () use ($adminClient, $connectDb, &$state) {
+    $db = $connectDb();
+    $printerId = (int) $state['printer_id'];
+
+    $jobId = (int) $db->insert('print_jobs', [
+        'job_number' => 'AKTEST' . random_int(1000, 9999),
+        'batch_id' => bin2hex(random_bytes(16)),
+        'location_id' => (int) $db->scalar('SELECT location_id FROM printers WHERE id = ?', [$printerId]),
+        'printer_id' => $printerId,
+        'copies' => 1, 'color_mode' => 'bw', 'paper_size' => 'A4',
+        'orientation' => 'portrait', 'duplex' => 'single', 'page_range' => 'all',
+        'document_pages' => 1, 'selected_pages' => 1, 'billable_pages' => 1, 'sheets' => 1,
+        'total_paise' => 0, 'currency' => 'INR',
+        'payment_status' => 'not_required', 'status' => 'queued', 'max_attempts' => 3,
+    ]);
+
+    $adminClient->submitForm('/admin/printers/' . $printerId, ['_method' => 'DELETE']);
+    $stillHere = $db->scalar('SELECT deleted_at FROM printers WHERE id = ?', [$printerId]);
+
+    $db->execute('DELETE FROM print_jobs WHERE id = ?', [$jobId]);
+
+    return TestRunner::assertTrue(
+        $stillHere === null,
+        'Refused while a job was queued on it, so the job keeps the printer it belongs to.',
+        'deleted_at=' . var_export($stillHere, true)
+    );
+});
+
 $runner->group('Transport limitations are enforced, not hidden');
 
 $runner->test('TL.1', 'RAW/9100 refuses a PDF for a printer with no interpreter', 'a permanent, explained failure', function () use ($basePath, $rawPort, $makePdf, $scratch) {

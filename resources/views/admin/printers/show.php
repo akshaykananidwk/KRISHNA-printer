@@ -130,6 +130,14 @@ $valueLabels = [
           <button type="submit" class="a-btn a-btn--ghost a-btn--sm">Make default here</button>
         </form>
       <?php endif; ?>
+      <form class="a-inline-form" method="post" action="/admin/printers/<?= $printer->id() ?>">
+        <?= Csrf::field() ?>
+        <input type="hidden" name="_method" value="DELETE">
+        <button type="submit" class="a-btn a-btn--danger a-btn--sm"
+                data-confirm="Remove this printer? Its job history is kept, and jobs still in progress must finish or be cancelled first.">
+          Delete printer
+        </button>
+      </form>
     </div>
   </section>
 
