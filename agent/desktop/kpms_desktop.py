@@ -71,11 +71,53 @@ DANGER = "#b3261e"
 OK = "#1e6f5c"
 
 
-def default_config_path() -> Path:
+def machine_config_path() -> Path:
+    """Where the service installer puts its configuration, for every user."""
     if os.name == "nt":
         base = Path(os.environ.get("ProgramData", r"C:\ProgramData"))
         return base / "KrishnaPrinter" / "agent" / "config.json"
+    return Path("/etc/kpms-agent/config.json")
+
+
+def user_config_path() -> Path:
+    """Where this user's own copy lives."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        return base / "KrishnaPrinter" / "agent" / "config.json"
     return Path.home() / ".config" / "kpms-agent" / "config.json"
+
+
+def default_config_path() -> Path:
+    """
+    The configuration this window should use.
+
+    The machine-wide file when it is already there and writable - so the app
+    and the service share one setup - and this user's own otherwise.
+
+    The service installer locks its config down to Administrators and SYSTEM,
+    which is right for a file holding a token. The desktop app runs as an
+    ordinary user, and writing there raised PermissionError and took the whole
+    connection down with it. An app that asks someone to run a print shop
+    should not also ask them for Administrator.
+    """
+    machine = machine_config_path()
+    if machine.is_file() and os.access(machine, os.W_OK):
+        return machine
+
+    user = user_config_path()
+    if user.is_file():
+        return user
+
+    # Nothing yet: prefer the machine-wide location when it can be created,
+    # since a service installed later will then find the same settings.
+    try:
+        machine.parent.mkdir(parents=True, exist_ok=True)
+        probe = machine.parent / ".write-test"
+        probe.write_text("")
+        probe.unlink()
+        return machine
+    except OSError:
+        return user
 
 
 def is_safe_server(url: str) -> bool:
@@ -184,31 +226,54 @@ class DesktopApp:
     # -- configuration ----------------------------------------------------
 
     def _read_settings(self) -> dict[str, Any]:
-        try:
-            # utf-8-sig: PowerShell and Notepad both write a byte-order mark.
-            return json.loads(self.config_path.read_text(encoding="utf-8-sig"))
-        except (OSError, ValueError):
-            return {}
-
-    def _write_settings(self) -> None:
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        work = self.config_path.parent / "work"
-        work.mkdir(parents=True, exist_ok=True)
-
-        self.settings.update({
-            "server": self.server_var.get().strip().rstrip("/"),
-            "token": self.token_var.get().strip(),
-            "work_dir": str(work),
-            "poll_interval": int(self.settings.get("poll_interval", 10)),
-            "verify_tls": bool(self.settings.get("verify_tls", True)),
-        })
-        self.config_path.write_text(json.dumps(self.settings, indent=2), encoding="utf-8")
-
-        if os.name != "nt":
+        """This user's settings, falling back to the machine-wide ones."""
+        for path in (self.config_path, machine_config_path(), user_config_path()):
             try:
-                self.config_path.chmod(0o600)
+                # utf-8-sig: PowerShell and Notepad both write a byte-order mark.
+                return json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError):
+                continue
+        return {}
+
+    def _write_settings(self) -> str:
+        """
+        Save the settings, falling back to this user's own file.
+
+        Returns a note when the location was not the expected one, so the
+        window can say where the token went instead of failing silently.
+        """
+        for path in (self.config_path, user_config_path()):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                work = path.parent / "work"
+                work.mkdir(parents=True, exist_ok=True)
+
+                self.settings.update({
+                    "server": self.server_var.get().strip().rstrip("/"),
+                    "token": self.token_var.get().strip(),
+                    "work_dir": str(work),
+                    "poll_interval": int(self.settings.get("poll_interval", 10)),
+                    "verify_tls": bool(self.settings.get("verify_tls", True)),
+                })
+                path.write_text(json.dumps(self.settings, indent=2), encoding="utf-8")
+
+                if os.name != "nt":
+                    try:
+                        path.chmod(0o600)
+                    except OSError:
+                        pass
+
+                if path != self.config_path:
+                    self.config_path = path
+                    return (
+                        f" The shared settings file could not be written, so this is saved "
+                        f"for your account instead ({path})."
+                    )
+                return ""
             except OSError:
-                pass
+                continue
+
+        return " The settings could not be saved, so the token will be asked for again next time."
 
     # -- layout -----------------------------------------------------------
 
@@ -418,11 +483,22 @@ class DesktopApp:
 
         try:
             while True:
-                self.ui_queue.get_nowait()()
+                callback = self.ui_queue.get_nowait()
+                try:
+                    callback()
+                except Exception as error:                  # noqa: BLE001
+                    # Whatever went wrong, say it in words. A traceback in a
+                    # dialog helps nobody running a shop, and one raised here
+                    # used to repeat on every poll.
+                    self._append_log(traceback.format_exc())
+                    self._set_status("Something went wrong", DANGER)
+                    self.connect_message.configure(
+                        text=f"{error.__class__.__name__}: {error}\n"
+                             "The Activity tab has the detail.",
+                        foreground=DANGER,
+                    )
         except queue.Empty:
             pass
-        except Exception:                                   # noqa: BLE001
-            self._append_log(traceback.format_exc())
 
         self.root.after(200, self._poll_log)
 
@@ -498,12 +574,12 @@ class DesktopApp:
             for p in configuration.get("printers", [])
         }
 
-        self._write_settings()
+        note = self._write_settings()
 
         name = self.device.get("name", "this computer")
         count = len(self.registered)
         self.connect_message.configure(
-            text=f"Connected as \u201c{name}\u201d with {count} printer(s) assigned.",
+            text=f"Connected as \u201c{name}\u201d with {count} printer(s) assigned." + note,
             foreground=OK,
         )
         self._set_status(f"Connected \u00b7 {name}", OK)

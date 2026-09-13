@@ -117,8 +117,13 @@ def main() -> int:
     sys.modules["kpms_desktop"] = desktop
     spec.loader.exec_module(desktop)
 
+    # Point every configuration location at scratch. The app deliberately
+    # falls back to the machine-wide and per-user files, so leaving those at
+    # their real paths let a previous run's token leak into this one.
     scratch = Path(tempfile.mkdtemp())
     desktop.default_config_path = lambda: scratch / "config.json"
+    desktop.machine_config_path = lambda: scratch / "machine.json"
+    desktop.user_config_path = lambda: scratch / "user.json"
 
     import tkinter as tk
 
@@ -129,6 +134,40 @@ def main() -> int:
     visible, missing = agent_imports_are_visible()
     check("every module the agent needs is visible to the packager", visible,
           f"not imported by the window: {missing}")
+
+    print("Settings location")
+    # The service installer locks its config to Administrators and SYSTEM,
+    # which is right for a file holding a token - and made the desktop app,
+    # running as an ordinary user, die with PermissionError on connect. It must
+    # fall back to this user's own file, not fail.
+    import tkinter as _tk
+
+    blocker = Path(tempfile.mkdtemp()) / "not-a-dir"
+    blocker.write_text("")
+    unwritable = blocker / "agent" / "config.json"
+    mine = Path(tempfile.mkdtemp()) / "mine" / "config.json"
+
+    saved_machine, saved_user = desktop.machine_config_path, desktop.user_config_path
+    desktop.machine_config_path = lambda: unwritable
+    desktop.user_config_path = lambda: mine
+
+    probe_root = _tk.Tk()
+    probe = desktop.DesktopApp(probe_root)
+    probe.config_path = unwritable
+    probe.server_var.set("https://print.example.com")
+    probe.token_var.set("kpms_probe_token")
+    note = probe._write_settings()
+
+    check("an unwritable shared config falls back to this user's own",
+          mine.is_file() and json.loads(mine.read_text())["token"] == "kpms_probe_token",
+          f"note: {note}")
+    check("and says where the settings went instead",
+          "your account" in note, f"note: {note!r}")
+    check("the app then uses that file", probe.config_path == mine)
+    check("and reads it back", probe._read_settings().get("token") == "kpms_probe_token")
+    probe_root.destroy()
+
+    desktop.machine_config_path, desktop.user_config_path = saved_machine, saved_user
 
     print("Window")
     check("the window builds", root.title().startswith("Krishna Printer"))

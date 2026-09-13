@@ -84,6 +84,27 @@ it a test page, and mark what actually worked. Until something is verified the
 printer offers nothing and takes no jobs — deliberately, so nobody pays for
 double-sided on a printer that cannot do it.
 
+## Where settings are kept
+
+The token and server address go in `config.json`. The app prefers the
+machine-wide file the service installer uses, so a window and a service share
+one setup:
+
+```
+C:\ProgramData\KrishnaPrinter\agent\config.json
+```
+
+That file is locked to Administrators and SYSTEM, which is right for a file
+holding a token — and means an ordinary user cannot write it. When that
+happens the app saves to your own account instead, and says so:
+
+```
+%LOCALAPPDATA%\KrishnaPrinter\agent\config.json
+```
+
+No Administrator prompt either way. It reads both, so a setup made by the
+installer is picked up by the window and the other way round.
+
 ## Security
 
 - The token is a credential. It is stored in `config.json` next to the agent,
