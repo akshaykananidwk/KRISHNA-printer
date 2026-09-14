@@ -16,6 +16,7 @@
 [CmdletBinding()]
 param(
     [string] $OutputName = "KrishnaPrinter",
+    [string] $Server = "",
     [switch] $KeepConsole
 )
 
@@ -38,6 +39,25 @@ if (-not $python) { $python = Get-Command python3.exe -ErrorAction SilentlyConti
 if (-not $python) { Fail "Python 3 is required to build. Install it from python.org." }
 
 Info "Python at $($python.Source)"
+
+# --- The address this build talks to ---------------------------------------
+# Stamped into the source so the field in the window starts filled in. Nobody
+# at a shop counter should be asked to type a domain, and a domain typed by
+# hand is one that gets a letter wrong once in fifty.
+if ($Server) {
+    $trimmed = $Server.TrimEnd('/')
+    if ($trimmed -notmatch '^https://') {
+        Fail "-Server must start with https:// - the agent carries a token and customer documents."
+    }
+    $source = Get-Content $app -Raw
+    $updated = [regex]::Replace($source, '(?m)^DEFAULT_SERVER = ".*"$', "DEFAULT_SERVER = `"$trimmed`"")
+    if ($updated -eq $source) { Fail "Could not find DEFAULT_SERVER in kpms_desktop.py to stamp." }
+    [IO.File]::WriteAllText($app, $updated, (New-Object System.Text.UTF8Encoding $false))
+    Good "Server address set to $trimmed"
+}
+
+$serverMatch = [regex]::Match((Get-Content $app -Raw), 'DEFAULT_SERVER = "([^"]+)"')
+if ($serverMatch.Success) { Info "Builds will connect to $($serverMatch.Groups[1].Value)" }
 
 Info "Installing PyInstaller (build-time only)..."
 & $python.Source -m pip install --upgrade --quiet pyinstaller

@@ -210,6 +210,113 @@ def looks_virtual(name: str, port: str = "") -> bool:
     return FAX_QUEUE.search(name) is not None
 
 
+# What has to be on a Windows machine before it can turn a file into paper.
+#
+# Neither ships with Windows and neither is optional in the way it sounds:
+# without SumatraPDF nothing prints at all, because Windows has no way to print
+# a PDF from a script; without LibreOffice a Word file or a photograph is
+# refused. A shop owner should not be told to open a terminal and run winget,
+# so the window installs them.
+REQUIREMENTS = {
+    "sumatra": {
+        "label": "SumatraPDF",
+        "why": "Windows cannot print a PDF from a script without it. Nothing prints until it is installed.",
+        "winget": "SumatraPDF.SumatraPDF",
+        "required": True,
+    },
+    "libreoffice": {
+        "label": "LibreOffice",
+        "why": "Turns Word, Excel, PowerPoint files and photographs into something printable. "
+               "PDFs print without it.",
+        "winget": "TheDocumentFoundation.LibreOffice",
+        "required": False,
+    },
+}
+
+
+def winget_path() -> str | None:
+    """winget, which is on Windows 11 and on any updated Windows 10."""
+    return shutil.which("winget") or shutil.which("winget.exe")
+
+
+def install_requirement(key: str) -> tuple[bool, str]:
+    """
+    Install one requirement, and say what happened in words.
+
+    Per-user, so a counter PC does not need an administrator standing over it.
+    Returns (installed, message) - never raises, because this runs from a
+    button and a traceback in a dialog helps nobody running a shop.
+    """
+    requirement = REQUIREMENTS.get(key)
+    if requirement is None:
+        return False, f"There is nothing called {key} to install."
+
+    if os.name != "nt":
+        return False, "This installs Windows packages; on Linux use the system package manager."
+
+    winget = winget_path()
+    if winget is None:
+        return False, (
+            f"winget is not on this computer, so {requirement['label']} cannot be installed "
+            "automatically. Update Windows, or install it by hand from its own website."
+        )
+
+    try:
+        result = run_quiet(
+            [winget, "install", "--id", requirement["winget"], "--silent",
+             "--accept-package-agreements", "--accept-source-agreements"],
+            timeout=1800,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"Installing {requirement['label']} took too long and was stopped."
+    except OSError as error:
+        return False, f"Could not start winget: {error}"
+
+    output = f"{result.stdout}\n{result.stderr}".strip()
+
+    # winget exits non-zero for "already installed", which is not a failure -
+    # it is the answer we wanted. The caller checks the file afterwards
+    # regardless, so this only decides what the operator is told.
+    if "already installed" in output.lower() or "no available upgrade" in output.lower():
+        return True, f"{requirement['label']} was already installed."
+
+    if result.returncode != 0:
+        return False, (
+            f"winget could not install {requirement['label']}: "
+            + (output.splitlines()[-1][:200] if output else f"it exited with {result.returncode}")
+        )
+
+    return True, f"{requirement['label']} installed."
+
+
+def requirement_status(spooler) -> list[dict[str, Any]]:
+    """
+    Each requirement, whether it is present, and where it was found.
+
+    Takes the backend rather than assuming Windows, so the same panel can say
+    something true on Linux, where CUPS handles both jobs itself.
+    """
+    found = {
+        "sumatra": getattr(spooler, "sumatra", lambda: None)(),
+        "libreoffice": Converter.libreoffice(),
+    }
+
+    rows = []
+    for key, requirement in REQUIREMENTS.items():
+        # CUPS renders PDFs and images itself; SumatraPDF is a Windows-only gap.
+        skip = key == "sumatra" and getattr(spooler, "label", "") == "CUPS"
+        rows.append({
+            "key": key,
+            "label": requirement["label"],
+            "why": requirement["why"],
+            "required": requirement["required"],
+            "present": skip or bool(found.get(key)),
+            "path": found.get(key) or "",
+            "not_needed": skip,
+        })
+    return rows
+
+
 def run_quiet(args, **kwargs) -> subprocess.CompletedProcess:
     """
     subprocess.run that never flashes a window.

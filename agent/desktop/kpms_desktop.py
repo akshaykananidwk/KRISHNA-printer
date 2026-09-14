@@ -59,6 +59,15 @@ import urllib.request    # noqa: F401
 
 APP_NAME = "Krishna Printer"
 APP_VERSION = "1.0.0"
+
+# The address every copy of this software talks to.
+#
+# One service, one domain, so nobody at a shop counter should ever be asked to
+# type it - and an address typed by hand is an address that gets a letter wrong
+# once in fifty. The field stays editable for a trial server, but it starts
+# filled in and correct. build.ps1 stamps this line, so pointing a build at a
+# different deployment is one edit in one place.
+DEFAULT_SERVER = "https://print.akdwk.in"
 AUTOSTART_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 # --- Colours -------------------------------------------------------------
@@ -598,6 +607,8 @@ class DesktopApp:
         self._build()
         self._poll_log()
         self._start_tray()
+        self.requirements: list[dict[str, Any]] = []
+        self.refresh_requirements()
 
         # A token already on disk means this machine has been set up before.
         configured = bool(self.settings.get("token") and self.settings.get("server"))
@@ -813,7 +824,7 @@ class DesktopApp:
         form.columnconfigure(1, weight=1)
 
         ttk.Label(form, text="Server address", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=6)
-        self.server_var = tk.StringVar(value=self.settings.get("server", "https://"))
+        self.server_var = tk.StringVar(value=self.settings.get("server") or DEFAULT_SERVER)
         ttk.Entry(form, textvariable=self.server_var).grid(row=0, column=1, sticky="ew", padx=(12, 0), pady=6)
 
         ttk.Label(form, text="Agent token", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=6)
@@ -873,6 +884,30 @@ class DesktopApp:
             self.autostart_box.configure(state="disabled")
             self.autostart_message.configure(
                 text="On Linux the installer registers a systemd service instead.")
+
+        needs = self._card(tab)
+        ttk.Label(needs, text="What this computer needs",
+                  font=self.head_font, style="Card.TLabel").pack(anchor="w")
+        ttk.Label(needs, style="Muted.TLabel", wraplength=760, justify="left",
+                  text="Two free programs do the actual printing. If either is missing, the "
+                       "button installs it - no terminal, no Administrator."
+                  ).pack(anchor="w", pady=(4, 12))
+
+        self.requirements_box = ttk.Frame(needs, style="Card.TFrame")
+        self.requirements_box.pack(fill="x")
+
+        needs_row = ttk.Frame(needs, style="Card.TFrame")
+        needs_row.pack(fill="x", pady=(12, 0))
+        self.install_btn = ttk.Button(needs_row, text="Install what is missing",
+                                      style="Accent.TButton", command=self.install_requirements,
+                                      state="disabled")
+        self.install_btn.pack(side="left")
+        ttk.Button(needs_row, text="Check again",
+                   command=self.refresh_requirements).pack(side="left", padx=8)
+
+        self.requirements_message = ttk.Label(needs, style="Muted.TLabel",
+                                              wraplength=760, justify="left", text="")
+        self.requirements_message.pack(anchor="w", pady=(8, 0))
 
         updates = self._card(tab)
         ttk.Label(updates, text="Updates", font=self.head_font, style="Card.TLabel").pack(anchor="w")
@@ -1297,6 +1332,105 @@ class DesktopApp:
         self.stop_btn.configure(state="disabled")
         self.start_btn.configure(state="normal")
         self._set_status("Stopped", MUTED)
+
+    # -- what this computer needs ------------------------------------------
+
+    def refresh_requirements(self) -> None:
+        """Read what is installed and redraw the list. Cheap; safe to repeat."""
+        module = self.agent_module
+        spooler = module.select_spooler()
+        if spooler is None:
+            # Nothing to install into. Offering the button here would promise a
+            # fix for a problem it cannot reach.
+            self.requirements = []
+            self.install_btn.configure(state="disabled")
+            self.requirements_message.configure(
+                text="No printing system was found on this computer.", foreground=DANGER)
+            return
+
+        self.requirements = module.requirement_status(spooler)
+
+        for child in self.requirements_box.winfo_children():
+            child.destroy()
+
+        for row in self.requirements:
+            line = ttk.Frame(self.requirements_box, style="Card.TFrame")
+            line.pack(fill="x", pady=2)
+
+            if row["not_needed"]:
+                mark, colour, state = "\u2013", MUTED, "not needed here"
+            elif row["present"]:
+                mark, colour, state = "\u2713", OK, "installed"
+            elif row["required"]:
+                mark, colour, state = "\u2717", DANGER, "missing - nothing will print"
+            else:
+                mark, colour, state = "!", DANGER, "missing"
+
+            ttk.Label(line, text=mark, foreground=colour, style="Card.TLabel",
+                      width=2).pack(side="left")
+            ttk.Label(line, text=row["label"], style="Card.TLabel",
+                      font=self.head_font).pack(side="left", padx=(4, 8))
+            ttk.Label(line, text=state, foreground=colour,
+                      style="Muted.TLabel").pack(side="left")
+
+            ttk.Label(self.requirements_box, text=row["why"], style="Muted.TLabel",
+                      wraplength=720, justify="left").pack(anchor="w", padx=(28, 0), pady=(0, 6))
+
+        missing = [r for r in self.requirements if not r["present"] and not r["not_needed"]]
+        self.install_btn.configure(state="normal" if missing else "disabled")
+
+        if not missing:
+            self.requirements_message.configure(
+                text="Everything needed is installed.", foreground=OK)
+        else:
+            self.requirements_message.configure(
+                text="Missing: " + ", ".join(r["label"] for r in missing), foreground=DANGER)
+
+    def install_requirements(self) -> None:
+        """
+        Install whatever is missing, one at a time, saying so as it goes.
+
+        LibreOffice is a few hundred megabytes, so this is slow and has to look
+        like it is working rather than like it has hung.
+        """
+        missing = [r for r in getattr(self, "requirements", [])
+                   if not r["present"] and not r["not_needed"]]
+        if not missing:
+            return
+
+        self.install_btn.configure(state="disabled")
+        names = ", ".join(r["label"] for r in missing)
+        self.requirements_message.configure(
+            text=f"Installing {names}. This can take several minutes - LibreOffice is a large "
+                 f"download. You can leave this window open.",
+            foreground=INK)
+
+        module = self.agent_module
+        keys = [r["key"] for r in missing]
+
+        def work():
+            results = []
+            for key in keys:
+                results.append((key, *module.install_requirement(key)))
+            return results
+
+        def done(result, error):
+            self.install_btn.configure(state="normal")
+            if error is not None:
+                self.requirements_message.configure(
+                    text=f"Could not install: {error}", foreground=DANGER)
+                return
+
+            for _, ok, message in result:
+                self._append_log(message)
+
+            failures = [message for _, ok, message in result if not ok]
+            self.refresh_requirements()
+            if failures:
+                self.requirements_message.configure(
+                    text=" ".join(failures), foreground=DANGER)
+
+        self._in_background(work, done)
 
     # -- updates -----------------------------------------------------------
 

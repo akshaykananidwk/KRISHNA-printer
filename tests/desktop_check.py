@@ -295,11 +295,37 @@ def main() -> int:
           "operators would have to work it out themselves")
     check("and leaves it in a file beside the installer",
           ".sha256" in ps1_text)
+
+    # build.ps1 has the same trap install.ps1 fell into: Windows PowerShell 5.1
+    # reads a BOM-less file as the machine's ANSI code page, and one smart
+    # quote pasted in from a document then acts as a string delimiter. The BOM
+    # is what makes it read the file as UTF-8; the ASCII body is what means it
+    # does not matter either way.
+    ps1_bytes = ps1.read_bytes()
+    has_bom = ps1_bytes[:3] == b"\xef\xbb\xbf"
+    try:
+        ps1_bytes[3:].decode("ascii")
+        ps1_ascii = True
+    except UnicodeDecodeError:
+        ps1_ascii = False
+    check("build.ps1 starts with a UTF-8 BOM", has_bom)
+    check("and is otherwise plain ASCII", ps1_ascii)
+
+    # The checksum an operator has to publish is printed by the build, because
+    # the alternative is hashing some other copy of the file - an older build,
+    # or the one already on the server - and publishing something that will not
+    # match what agents download.
+    check("the build prints the installer's SHA-256",
+          "Get-FileHash" in ps1_text and "SHA-256" in ps1_text,
+          "operators would have to work it out themselves")
+    check("and leaves it in a file beside the installer",
+          ".sha256" in ps1_text)
     check("build.bat uses CRLF line endings",
           b"\r\n" in bat_bytes and b"\n" not in bat_bytes.replace(b"\r\n", b""),
           "a .bat with bare LF can break goto and labels")
 
     bat_text = bat_bytes.decode("ascii")
+    ps1_text = ps1.read_text()
 
     # Every label the script jumps to must exist. A goto to a missing label
     # does not stop the script - it ends it, silently, mid-build.
@@ -362,6 +388,15 @@ def main() -> int:
 
     # One version number for the product. The installer is stamped from it and
     # the updater compares against it.
+    check("the wizard installs what the printing actually needs",
+          "SumatraPDF.SumatraPDF" in iss_text and "TheDocumentFoundation.LibreOffice" in iss_text,
+          "a shop owner would be left to run winget by hand")
+    check("and does not offer to skip the one without which nothing prints",
+          'Name: "libreoffice"' in iss_text and 'Name: "sumatra"' not in iss_text,
+          "a tick box that installs a print agent which cannot print")
+    check("it checks winget is there before calling it",
+          "HasWinget" in iss_text and "winget.exe" in iss_text)
+
     check("the installer takes its version from the application",
           "APP_VERSION" in ps1_text and "AppVersion" in iss_text,
           "a second copy of the version is one more thing to forget")
@@ -434,6 +469,68 @@ def main() -> int:
     if os.name != "nt":
         check("and setting it elsewhere reports why, rather than raising",
               "Windows" in desktop.set_autostart(True))
+
+    print("Ready to use out of the box")
+
+    # The domain never changes, so nobody at a counter should be asked to type
+    # it - and a domain typed by hand gets a letter wrong once in fifty.
+    check("the server address is filled in already",
+          desktop.DEFAULT_SERVER.startswith("https://") and len(desktop.DEFAULT_SERVER) > 10,
+          f"got {desktop.DEFAULT_SERVER!r}")
+    check("and it is what a fresh window shows",
+          app.server_var.get() == desktop.DEFAULT_SERVER,
+          f"got {app.server_var.get()!r}")
+
+    # A machine already set up against another server must not be quietly
+    # repointed by a rebuild.
+    saved_root = _tk.Tk()
+    saved_window = None
+    try:
+        saved_read = desktop.DesktopApp._read_settings
+        desktop.DesktopApp._read_settings = lambda self: {"server": "https://other.example.com"}
+        try:
+            saved_window = desktop.DesktopApp(saved_root)
+        finally:
+            desktop.DesktopApp._read_settings = saved_read
+        check("a server already saved on this machine still wins",
+              saved_window.server_var.get() == "https://other.example.com",
+              f"got {saved_window.server_var.get()!r}")
+    finally:
+        saved_root.destroy()
+
+    # Requirements: what is missing, and a button that installs it.
+    class NoSumatra:
+        label = "The Windows print spooler"
+
+        @staticmethod
+        def sumatra():
+            return None
+
+    agent_module = app.agent_module
+    saved_select = agent_module.select_spooler
+    saved_libre = agent_module.Converter.libreoffice
+    try:
+        agent_module.select_spooler = lambda: NoSumatra
+        agent_module.Converter.libreoffice = staticmethod(lambda: "C:/LO/soffice.exe")
+        app.refresh_requirements()
+        labels = {r["label"]: r for r in app.requirements}
+        check("a missing requirement is listed as missing",
+              labels.get("SumatraPDF", {}).get("present") is False)
+        check("an installed one is listed as installed",
+              labels.get("LibreOffice", {}).get("present") is True)
+        check("and the install button is offered",
+              str(app.install_btn.cget("state")) == "normal")
+        check("with the missing one named",
+              "SumatraPDF" in str(app.requirements_message.cget("text")))
+
+        agent_module.select_spooler = lambda: None
+        app.refresh_requirements()
+        check("with no printing system at all, nothing is offered to install",
+              str(app.install_btn.cget("state")) == "disabled",
+              "a button promising a fix it cannot reach")
+    finally:
+        agent_module.select_spooler = saved_select
+        agent_module.Converter.libreoffice = saved_libre
 
     print("Refusals")
     check("https is accepted", desktop.is_safe_server("https://print.example.com"))
