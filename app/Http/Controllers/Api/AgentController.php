@@ -711,6 +711,7 @@ final class AgentController extends Controller
             // without asking separately. It is only ever advice: nothing is
             // downloaded or installed unless somebody presses the button.
             'update' => $this->releaseInfo(),
+            'helpers' => $this->helperDownloads(),
         ]);
     }
 
@@ -722,7 +723,11 @@ final class AgentController extends Controller
      */
     public function update(Request $request): Response
     {
-        return $this->json(['success' => true, 'update' => $this->releaseInfo()]);
+        return $this->json([
+            'success' => true,
+            'update' => $this->releaseInfo(),
+            'helpers' => $this->helperDownloads(),
+        ]);
     }
 
     /**
@@ -761,6 +766,39 @@ final class AgentController extends Controller
             'sha256' => $sha256,
             'notes' => (string) Config::get('settings.agent_release_notes', ''),
         ];
+    }
+
+    /**
+     * Where to get SumatraPDF and LibreOffice when winget cannot.
+     *
+     * winget is not on older Windows 10 at all, and a shop counter PC is
+     * exactly the machine nobody ever updated. Rather than the agent guessing
+     * download addresses that change with every release, an operator publishes
+     * them here and the agent checks what it downloads against the checksum,
+     * the same way it checks an update of itself.
+     *
+     * @return array<string,array<string,string>>
+     */
+    private function helperDownloads(): array
+    {
+        $out = [];
+        foreach (['sumatra', 'libreoffice'] as $key) {
+            $url = trim((string) Config::get("settings.helper_{$key}_url", ''));
+            $sha256 = strtolower(trim((string) Config::get("settings.helper_{$key}_sha256", '')));
+
+            // Both, over HTTPS, or nothing: an address with no checksum is an
+            // invitation to run whatever is at that address.
+            if (!str_starts_with($url, 'https://') || preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+                continue;
+            }
+
+            $out[$key] = [
+                'url' => $url,
+                'sha256' => $sha256,
+                'arguments' => trim((string) Config::get("settings.helper_{$key}_arguments", '')),
+            ];
+        }
+        return $out;
     }
 
     private function extendLease(int $jobId): void

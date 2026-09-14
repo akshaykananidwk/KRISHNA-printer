@@ -239,13 +239,55 @@ def winget_path() -> str | None:
     return shutil.which("winget") or shutil.which("winget.exe")
 
 
-def install_requirement(key: str) -> tuple[bool, str]:
+def run_installer(path: Path, arguments: str = "") -> tuple[bool, str]:
+    """
+    Run a downloaded installer without anybody watching.
+
+    An .msi cannot be executed; it has to be handed to msiexec, and getting
+    that wrong looks exactly like a download that did nothing. The arguments
+    default to what each kind of installer understands for "do not ask me
+    anything", and an operator can override them per download.
+    """
+    if path.suffix.lower() == ".msi":
+        args = ["msiexec", "/i", str(path), "/qn", "/norestart"]
+        if arguments:
+            args.extend(arguments.split())
+    else:
+        args = [str(path)]
+        args.extend((arguments or "/S").split())
+
+    try:
+        result = run_quiet(args, timeout=3600)
+    except subprocess.TimeoutExpired:
+        return False, "The installer was still running after an hour and was stopped."
+    except OSError as error:
+        return False, f"The installer would not start: {error}"
+
+    # 3010 is "done, but Windows wants a restart", which is a success for us -
+    # nothing here needs the restart before it can be found on disk.
+    if result.returncode not in (0, 3010):
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return False, (
+            f"The installer exited with {result.returncode}"
+            + (f": {detail[-1][:160]}" if detail else ".")
+        )
+
+    return True, "Installed."
+
+
+def install_requirement(key: str, download: dict[str, Any] | None = None) -> tuple[bool, str]:
     """
     Install one requirement, and say what happened in words.
 
-    Per-user, so a counter PC does not need an administrator standing over it.
-    Returns (installed, message) - never raises, because this runs from a
-    button and a traceback in a dialog helps nobody running a shop.
+    winget first, because it keeps the package up to date afterwards. But
+    winget is not on older Windows 10 at all, and a counter PC is exactly the
+    machine that never got updated - so where it is missing or refuses, this
+    falls back to a download the operator published, checked against its
+    SHA-256 in the same way an update of this software is.
+
+    Per-user where the packager allows it, so nobody needs an administrator
+    standing over a shop counter. Never raises: this runs from a button, and a
+    traceback in a dialog helps nobody running a shop.
     """
     requirement = REQUIREMENTS.get(key)
     if requirement is None:
@@ -254,39 +296,65 @@ def install_requirement(key: str) -> tuple[bool, str]:
     if os.name != "nt":
         return False, "This installs Windows packages; on Linux use the system package manager."
 
+    reasons: list[str] = []
     winget = winget_path()
-    if winget is None:
+
+    if winget is not None:
+        try:
+            result = run_quiet(
+                [winget, "install", "--id", requirement["winget"], "--silent",
+                 "--accept-package-agreements", "--accept-source-agreements"],
+                timeout=3600,
+            )
+            output = f"{result.stdout}\n{result.stderr}".strip()
+
+            # winget exits non-zero for "already installed", which is not a
+            # failure - it is the answer we wanted.
+            if "already installed" in output.lower() or "no available upgrade" in output.lower():
+                return True, f"{requirement['label']} was already installed."
+
+            if result.returncode == 0:
+                return True, f"{requirement['label']} installed."
+
+            reasons.append(
+                "winget could not install it"
+                + (f" ({output.splitlines()[-1][:140]})" if output else "")
+            )
+        except subprocess.TimeoutExpired:
+            reasons.append("winget was still running after an hour and was stopped")
+        except OSError as error:
+            reasons.append(f"winget would not start ({error})")
+    else:
+        reasons.append("winget is not on this computer")
+
+    # --- The fallback the server published ---------------------------------
+    url = str((download or {}).get("url", "")).strip()
+    sha256 = str((download or {}).get("sha256", "")).strip()
+
+    if not url:
         return False, (
-            f"winget is not on this computer, so {requirement['label']} cannot be installed "
-            "automatically. Update Windows, or install it by hand from its own website."
+            f"{requirement['label']} could not be installed automatically: "
+            + "; ".join(reasons)
+            + ". Install it by hand from its own website, or ask us to publish a download."
         )
+
+    config = Config(server="", token="", work_dir=Path(tempfile.gettempdir()))
+    api = Api(config)
+    target = Path(tempfile.gettempdir()) / f"kpms-{key}-setup{Path(urllib.parse.urlparse(url).path).suffix or '.exe'}"
 
     try:
-        result = run_quiet(
-            [winget, "install", "--id", requirement["winget"], "--silent",
-             "--accept-package-agreements", "--accept-source-agreements"],
-            timeout=1800,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"Installing {requirement['label']} took too long and was stopped."
-    except OSError as error:
-        return False, f"Could not start winget: {error}"
+        api.fetch(url, target, sha256)
+    except ApiError as error:
+        return False, f"{requirement['label']} could not be downloaded: {error}"
 
-    output = f"{result.stdout}\n{result.stderr}".strip()
+    try:
+        ok, message = run_installer(target, str((download or {}).get("arguments", "")))
+    finally:
+        target.unlink(missing_ok=True)
 
-    # winget exits non-zero for "already installed", which is not a failure -
-    # it is the answer we wanted. The caller checks the file afterwards
-    # regardless, so this only decides what the operator is told.
-    if "already installed" in output.lower() or "no available upgrade" in output.lower():
-        return True, f"{requirement['label']} was already installed."
-
-    if result.returncode != 0:
-        return False, (
-            f"winget could not install {requirement['label']}: "
-            + (output.splitlines()[-1][:200] if output else f"it exited with {result.returncode}")
-        )
-
-    return True, f"{requirement['label']} installed."
+    if not ok:
+        return False, f"{requirement['label']}: {message}"
+    return True, f"{requirement['label']} installed from the published download."
 
 
 def requirement_status(spooler) -> list[dict[str, Any]]:

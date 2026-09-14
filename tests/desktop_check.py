@@ -512,16 +512,32 @@ def main() -> int:
     try:
         agent_module.select_spooler = lambda: NoSumatra
         agent_module.Converter.libreoffice = staticmethod(lambda: "C:/LO/soffice.exe")
+        # No winget here and nothing published: there is nothing to install
+        # WITH, which is a different problem from nothing to install, and the
+        # one a real operator hit on a second laptop.
+        app.helpers = {}
         app.refresh_requirements()
         labels = {r["label"]: r for r in app.requirements}
         check("a missing requirement is listed as missing",
               labels.get("SumatraPDF", {}).get("present") is False)
         check("an installed one is listed as installed",
               labels.get("LibreOffice", {}).get("present") is True)
-        check("and the install button is offered",
-              str(app.install_btn.cget("state")) == "normal")
         check("with the missing one named",
               "SumatraPDF" in str(app.requirements_message.cget("text")))
+        check("with no winget and nothing published, the button is not offered",
+              str(app.install_btn.cget("state")) == "disabled",
+              "a button that fails when pressed")
+        check("and the message says that is the problem",
+              "no winget" in str(app.requirements_message.cget("text")),
+              f"got {app.requirements_message.cget('text')!r}")
+
+        # Once a download is published for it, it can be installed after all.
+        app.helpers = {"sumatra": {"url": "https://files.example.com/s.exe",
+                                   "sha256": "a" * 64, "arguments": "-s"}}
+        app.refresh_requirements()
+        check("a published download makes it installable",
+              str(app.install_btn.cget("state")) == "normal")
+        app.helpers = {}
 
         agent_module.select_spooler = lambda: None
         app.refresh_requirements()

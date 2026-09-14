@@ -2922,6 +2922,76 @@ $runner->test('TU.1', 'A release is only published when it can be verified', 've
     );
 });
 
+$runner->test('TU.3', 'Fallback downloads need an address and a checksum, or they are not published', 'never a bare address', function () use ($baseUrl, $connectDb, $adminClient) {
+    // winget is absent on older Windows 10, and a shop counter PC is exactly
+    // that machine. The fallback is how those machines get SumatraPDF at all -
+    // but an address with nothing to check it against would run whatever
+    // happens to be there, on every counter in the estate.
+    $db = $connectDb();
+    $read = static fn (string $key): string => (string) $db->scalar(
+        'SELECT setting_value FROM system_settings WHERE setting_key = ?', [$key]
+    );
+
+    $digest = hash('sha256', 'pretend sumatra installer');
+
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/helpers', [
+        'helper_sumatra_url' => 'https://files.example.com/SumatraPDF-install.exe',
+        'helper_sumatra_sha256' => '',
+    ]);
+    $noChecksum = $read('helper_sumatra_url');
+
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/helpers', [
+        'helper_sumatra_url' => 'http://files.example.com/SumatraPDF-install.exe',
+        'helper_sumatra_sha256' => $digest,
+    ]);
+    $plainHttp = $read('helper_sumatra_url');
+
+    $adminClient->get('/admin/settings');
+    $adminClient->submitForm('/admin/settings/helpers', [
+        'helper_sumatra_url' => 'https://files.example.com/SumatraPDF-install.exe',
+        'helper_sumatra_sha256' => $digest,
+        'helper_sumatra_arguments' => '-s',
+    ]);
+    $good = $read('helper_sumatra_url');
+
+    // And an agent is told about it alongside its own release.
+    $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');
+    $adminClient->get('/admin/devices');
+    $page = $adminClient->submitForm('/admin/devices', [
+        'name' => 'Helper Download Agent',
+        'location_id' => (string) $locationId,
+        'poll_interval_secs' => '10',
+    ]);
+    if (preg_match('#id="agentToken">([^<]+)<#', $page['body'], $m) !== 1) {
+        return ['pass' => false, 'actual' => 'No agent token was issued.'];
+    }
+    $token = html_entity_decode(trim($m[1]), ENT_QUOTES);
+
+    $curl = curl_init($baseUrl . '/api/agent/config');
+    curl_setopt_array($curl, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => ['Authorization: Bearer ' . $token],
+    ]);
+    $body = (string) curl_exec($curl);
+    curl_close($curl);
+    $helpers = (json_decode($body, true) ?: [])['helpers'] ?? [];
+
+    return TestRunner::assertTrue(
+        $noChecksum === '' && $plainHttp === ''
+            && $good === 'https://files.example.com/SumatraPDF-install.exe'
+            && ($helpers['sumatra']['sha256'] ?? '') === $digest
+            && ($helpers['sumatra']['arguments'] ?? '') === '-s'
+            && !isset($helpers['libreoffice']),
+        'An address with no checksum and one over plain HTTP were both refused; the complete one '
+        . 'was stored and reaches the agent with its checksum and arguments, and the one that was '
+        . 'never published is simply absent.',
+        sprintf('no_checksum=%s plain_http=%s good=%s helpers=%s',
+            json_encode($noChecksum), json_encode($plainHttp), json_encode($good), json_encode($helpers))
+    );
+});
+
 $runner->test('TU.2', 'Agents are told about the release, and never about half of one', 'all three fields or published=false', function () use ($baseUrl, $connectDb, $adminClient) {
     $db = $connectDb();
     $locationId = (int) $db->scalar('SELECT id FROM locations ORDER BY id LIMIT 1');

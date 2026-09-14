@@ -307,4 +307,70 @@ final class SettingsController extends Controller
                 : sprintf('Release %s published. Agents will offer it on their next connection.', $version)
         );
     }
+
+    /**
+     * POST /admin/settings/helpers
+     *
+     * Where a shop's computer should get SumatraPDF and LibreOffice when
+     * winget cannot fetch them — which is every Windows 10 that never got
+     * updated, and a shop counter PC is exactly that machine.
+     *
+     * The same rule as the release: HTTPS and a checksum, or it is not
+     * published at all. An address with nothing to check it against is an
+     * invitation to run whatever happens to be at that address, on every shop
+     * counter in the estate.
+     */
+    public function saveHelpers(Request $request): Response
+    {
+        $settings = [];
+        $problems = [];
+
+        foreach (['sumatra' => 'SumatraPDF', 'libreoffice' => 'LibreOffice'] as $key => $label) {
+            $url = trim((string) $request->input("helper_{$key}_url", ''));
+            $sha256 = strtolower(trim((string) $request->input("helper_{$key}_sha256", '')));
+            $arguments = trim((string) $request->input("helper_{$key}_arguments", ''));
+
+            if ($url === '' && $sha256 === '') {
+                $settings["helper_{$key}_url"] = ['value' => '', 'type' => 'string', 'group' => 'printing'];
+                $settings["helper_{$key}_sha256"] = ['value' => '', 'type' => 'string', 'group' => 'printing'];
+                $settings["helper_{$key}_arguments"] = ['value' => '', 'type' => 'string', 'group' => 'printing'];
+                continue;
+            }
+
+            if (!str_starts_with($url, 'https://')) {
+                $problems[] = "$label: the address must start with https://.";
+                continue;
+            }
+            if (preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+                $problems[] = "$label: the SHA-256 must be 64 hexadecimal characters.";
+                continue;
+            }
+            if (strlen($url) > 500 || strlen($arguments) > 200) {
+                $problems[] = "$label: that address or argument list is too long.";
+                continue;
+            }
+
+            $settings["helper_{$key}_url"] = ['value' => $url, 'type' => 'string', 'group' => 'printing'];
+            $settings["helper_{$key}_sha256"] = ['value' => $sha256, 'type' => 'string', 'group' => 'printing'];
+            $settings["helper_{$key}_arguments"] = ['value' => $arguments, 'type' => 'string', 'group' => 'printing'];
+        }
+
+        if ($problems !== []) {
+            return $this->back($request, 'error', implode(' ', $problems));
+        }
+
+        $admin = $request->attribute('admin');
+        $this->settings->setMany($settings, $admin?->id());
+
+        $this->audit->log(
+            'settings.helpers',
+            'Updated the fallback downloads for SumatraPDF and LibreOffice.',
+            'settings',
+            null,
+            'notice'
+        );
+
+        return $this->back($request, 'success',
+            'Saved. Shops whose computer has no winget will use these instead.');
+    }
 }

@@ -599,6 +599,9 @@ class DesktopApp:
         self.agent_instance = None
 
         self.release: dict[str, Any] = {}
+        # Where to get SumatraPDF and LibreOffice when winget cannot - which is
+        # every Windows 10 that never got updated.
+        self.helpers: dict[str, Any] = {}
         self.tray: TrayIcon | None = None
         self.hidden = False
         self.explained_tray = False
@@ -1148,6 +1151,10 @@ class DesktopApp:
         # The config call carries the published release, so a connected window
         # already knows whether there is one without asking a second time.
         self._show_release(configuration.get("update") or {})
+        self.helpers = dict(configuration.get("helpers") or {})
+        # A machine with no winget could not install anything until it had
+        # connected; now it can, so say so rather than leaving the old message.
+        self.refresh_requirements()
 
         # The server's own list, which already contains the generic fallback -
         # prepending one here listed it twice.
@@ -1377,11 +1384,24 @@ class DesktopApp:
                       wraplength=720, justify="left").pack(anchor="w", padx=(28, 0), pady=(0, 6))
 
         missing = [r for r in self.requirements if not r["present"] and not r["not_needed"]]
-        self.install_btn.configure(state="normal" if missing else "disabled")
+
+        # Nothing to install WITH is a different problem from nothing to
+        # install, and an operator can fix it - so it is said rather than left
+        # as a button that fails when pressed.
+        can_install = bool(module.winget_path()) or any(
+            key in self.helpers for key in (r["key"] for r in missing)
+        )
+        self.install_btn.configure(state="normal" if missing and can_install else "disabled")
 
         if not missing:
             self.requirements_message.configure(
                 text="Everything needed is installed.", foreground=OK)
+        elif not can_install:
+            self.requirements_message.configure(
+                text="Missing: " + ", ".join(r["label"] for r in missing)
+                     + ". This computer has no winget, and no download has been published for it "
+                       "yet - tell us and we will publish one, or install them by hand.",
+                foreground=DANGER)
         else:
             self.requirements_message.configure(
                 text="Missing: " + ", ".join(r["label"] for r in missing), foreground=DANGER)
@@ -1408,10 +1428,12 @@ class DesktopApp:
         module = self.agent_module
         keys = [r["key"] for r in missing]
 
+        helpers = dict(self.helpers)
+
         def work():
             results = []
             for key in keys:
-                results.append((key, *module.install_requirement(key)))
+                results.append((key, *module.install_requirement(key, helpers.get(key))))
             return results
 
         def done(result, error):

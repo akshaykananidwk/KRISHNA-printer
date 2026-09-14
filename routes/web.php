@@ -232,6 +232,7 @@ $router->group([
             $router->post('/settings/payment/test', Admin\SettingsController::class . '@testPayment');
             $router->post('/settings/printing', Admin\SettingsController::class . '@savePrinting');
             $router->post('/settings/agent-release', Admin\SettingsController::class . '@saveAgentRelease');
+            $router->post('/settings/helpers', Admin\SettingsController::class . '@saveHelpers');
         });
 
         // --- System, updates and backups ---------------------------------

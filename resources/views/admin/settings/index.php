@@ -312,4 +312,60 @@ $on = static fn (string $key, bool $default = false): bool =>
   </form>
 </section>
 
+<section class="a-card">
+  <h2 class="a-card__title">Fallback downloads for shop computers</h2>
+  <p class="a-small" style="color:var(--ink-faint)">
+    Shops' computers get SumatraPDF and LibreOffice through winget, which is on Windows 11 and on
+    any updated Windows 10. Older machines have no winget at all &mdash; and a shop counter PC is
+    exactly the one nobody ever updated. Put the installers somewhere on https and name them here,
+    and those machines use these instead.
+  </p>
+
+  <div class="a-alert a-alert--info a-small">
+    <strong>Same rule as a release: address and checksum, or nothing.</strong>
+    The shop's computer downloads what the address serves and refuses to run it unless the SHA-256
+    matches. An address with nothing to check it against would run whatever happens to be there, on
+    every counter you have. Leave both boxes empty to publish nothing.
+    <code>Get-FileHash .\SumatraPDF-install.exe</code>
+  </div>
+
+  <form method="post" action="/admin/settings/helpers">
+    <?= Csrf::field() ?>
+
+    <?php foreach ([
+        'sumatra' => ['SumatraPDF', 'Without this nothing prints at all. Usually a small .exe; leave the arguments blank for -s.', '-s'],
+        'libreoffice' => ['LibreOffice', 'Only needed for Word, Excel, PowerPoint and photos. Usually an .msi, which is installed with /qn automatically.', ''],
+    ] as $key => [$label, $hint, $defaultArgs]): ?>
+      <h3 style="margin:1.2rem 0 .2rem"><?= View::e($label) ?></h3>
+      <p class="a-field__hint" style="margin:0 0 .6rem"><?= View::e($hint) ?></p>
+
+      <div class="a-field">
+        <label class="a-field__label" for="helper_<?= View::e($key) ?>_url">Download address (https only)</label>
+        <input class="a-input" type="url" spellcheck="false" maxlength="500"
+               id="helper_<?= View::e($key) ?>_url" name="helper_<?= View::e($key) ?>_url"
+               value="<?= View::e($s('helper_' . $key . '_url')) ?>">
+      </div>
+
+      <div class="a-form-grid">
+        <div class="a-field">
+          <label class="a-field__label" for="helper_<?= View::e($key) ?>_sha256">SHA-256</label>
+          <input class="a-input" type="text" spellcheck="false" maxlength="64"
+                 id="helper_<?= View::e($key) ?>_sha256" name="helper_<?= View::e($key) ?>_sha256"
+                 placeholder="64 hexadecimal characters"
+                 value="<?= View::e($s('helper_' . $key . '_sha256')) ?>">
+        </div>
+        <div class="a-field">
+          <label class="a-field__label" for="helper_<?= View::e($key) ?>_arguments">Silent arguments</label>
+          <input class="a-input" type="text" spellcheck="false" maxlength="200"
+                 id="helper_<?= View::e($key) ?>_arguments" name="helper_<?= View::e($key) ?>_arguments"
+                 placeholder="<?= View::e($defaultArgs !== '' ? $defaultArgs : 'left blank: /S for an .exe, /qn for an .msi') ?>"
+                 value="<?= View::e($s('helper_' . $key . '_arguments')) ?>">
+        </div>
+      </div>
+    <?php endforeach; ?>
+
+    <button type="submit" class="a-btn a-btn--primary" style="margin-top:.6rem">Save downloads</button>
+  </form>
+</section>
+
 <?php $view->end(); ?>

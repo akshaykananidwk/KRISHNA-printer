@@ -415,10 +415,65 @@ def main() -> int:
           "office-01" not in a.capabilities_reported,
           f"got {a.capabilities_reported}")
 
-    # --- Finding LibreOffice on Windows ------------------------------------
-    print("Finding LibreOffice")
+    # --- Installing what is missing ----------------------------------------
+    print("Installing prerequisites")
 
     import types
+
+    # winget is on Windows 11 and on any updated Windows 10 - and a shop
+    # counter PC is exactly the machine nobody ever updated. Without a fallback
+    # those machines could never install anything, which is what a real
+    # operator hit on a second laptop.
+    saved_os = agent.os
+    saved_which = agent.shutil.which
+    try:
+        agent.os = types.SimpleNamespace(name="nt", environ={})
+        agent.shutil.which = lambda name: None
+        ok, message = agent.install_requirement("sumatra")
+        check("with no winget and no download, it says both",
+              not ok and "winget is not on this computer" in message
+              and "ask us to publish a download" in message,
+              message)
+    finally:
+        agent.os = saved_os
+        agent.shutil.which = saved_which
+
+    # An .msi cannot be executed; it has to go through msiexec, and getting
+    # that wrong looks exactly like a download that did nothing.
+    ran: list[list[str]] = []
+    saved_run = agent.run_quiet
+    try:
+        agent.run_quiet = lambda args, **kwargs: (
+            ran.append([str(a) for a in args]),
+            FakeResult("", 0),
+        )[1]
+        agent.run_installer(Path("/tmp/setup.msi"))
+        agent.run_installer(Path("/tmp/setup.exe"))
+        agent.run_installer(Path("/tmp/other.exe"), "-s")
+    finally:
+        agent.run_quiet = saved_run
+
+    check("an .msi is handed to msiexec",
+          ran[0][0] == "msiexec" and "/qn" in ran[0], f"got {ran[0]}")
+    check("an .exe is run directly, silently",
+          ran[1][0].endswith("setup.exe") and "/S" in ran[1], f"got {ran[1]}")
+    check("and an operator's own arguments are used instead",
+          ran[2][1:] == ["-s"], f"got {ran[2]}")
+
+    # 3010 is "installed, but Windows would like a restart", which is a success:
+    # nothing here needs the restart before it can be found on disk.
+    for code, expected in ((0, True), (3010, True), (1603, False)):
+        saved_run = agent.run_quiet
+        try:
+            agent.run_quiet = lambda args, _c=code, **kwargs: FakeResult("", _c)
+            ok, _ = agent.run_installer(Path("/tmp/setup.exe"))
+        finally:
+            agent.run_quiet = saved_run
+        check(f"an installer exiting {code} is treated as {'done' if expected else 'failed'}",
+              ok is expected)
+
+    # --- Finding LibreOffice on Windows ------------------------------------
+    print("Finding LibreOffice")
 
     # It does not put itself on PATH - not from the MSI, not from winget - so
     # shutil.which() alone reported it missing on a machine where winget said
