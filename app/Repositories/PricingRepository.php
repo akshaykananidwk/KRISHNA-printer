@@ -155,6 +155,84 @@ final class PricingRepository extends Repository
         return $matrix;
     }
 
+    /**
+     * The simple per-page rules a shop sets for itself.
+     *
+     * Deliberately narrow: one price for a paper size and colour mode across
+     * the whole shop. Anything with a printer, a duplex condition or a volume
+     * tier was made by an operator who meant it, and this editor neither shows
+     * nor touches those.
+     *
+     * @return array<string,array<string,mixed>> keyed "A4:bw"
+     */
+    public function simpleRulesForLocation(int $locationId): array
+    {
+        $rows = $this->db->select(
+            'SELECT * FROM pricing_rules
+             WHERE location_id = ? AND printer_id IS NULL AND duplex IS NULL
+               AND paper_size IS NOT NULL AND color_mode IS NOT NULL
+               AND min_pages = 1 AND max_pages IS NULL',
+            [$locationId]
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $out[$row['paper_size'] . ':' . $row['color_mode']] = $row;
+        }
+        return $out;
+    }
+
+    /**
+     * Replace one shop's simple rules with exactly the prices given.
+     *
+     * A cell left blank is a rule removed, not a rule set to zero — the shop
+     * falls back to whatever the operator's estate-wide price is, which is the
+     * behaviour somebody clearing a box expects.
+     *
+     * @param array<string,int> $prices keyed "A4:bw" => paise
+     * @return array{written:int,removed:int}
+     */
+    public function replaceSimpleRules(int $locationId, array $prices): array
+    {
+        return $this->db->transaction(function () use ($locationId, $prices): array {
+            $existing = $this->simpleRulesForLocation($locationId);
+            $written = 0;
+            $removed = 0;
+
+            foreach ($prices as $key => $paise) {
+                [$paper, $colour] = explode(':', $key, 2);
+                if (isset($existing[$key])) {
+                    $this->updateById((int) $existing[$key]['id'], [
+                        'price_per_page_paise' => $paise,
+                        'is_active' => 1,
+                    ]);
+                } else {
+                    $this->create([
+                        'name' => sprintf('%s %s', $paper, $colour === 'bw' ? 'B&W' : 'Colour'),
+                        'location_id' => $locationId,
+                        'paper_size' => $paper,
+                        'color_mode' => $colour,
+                        'price_per_page_paise' => $paise,
+                        // Above the estate-wide default, below anything an
+                        // operator set deliberately for this shop.
+                        'priority' => 10,
+                        'is_active' => 1,
+                    ]);
+                }
+                $written++;
+            }
+
+            foreach ($existing as $key => $row) {
+                if (!array_key_exists($key, $prices)) {
+                    $this->deleteById((int) $row['id']);
+                    $removed++;
+                }
+            }
+
+            return ['written' => $written, 'removed' => $removed];
+        });
+    }
+
     public function deleteForLocation(int $locationId): int
     {
         return $this->db->delete('pricing_rules', ['location_id' => $locationId]);

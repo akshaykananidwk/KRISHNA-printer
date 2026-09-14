@@ -11,6 +11,7 @@ use App\Core\Session;
 use App\Core\Validator;
 use App\Repositories\DeviceRepository;
 use App\Repositories\PartnerRepository;
+use App\Repositories\PricingRepository;
 use App\Repositories\PrinterRepository;
 use App\Repositories\PrintJobRepository;
 use App\Services\AuthService;
@@ -32,7 +33,8 @@ final class PartnerController extends Controller
         private AuthService $auth,
         private DeviceRepository $devices,
         private PrinterRepository $printers,
-        private PrintJobRepository $jobs
+        private PrintJobRepository $jobs,
+        private PricingRepository $pricing
     ) {
     }
 
@@ -179,6 +181,11 @@ final class PartnerController extends Controller
             'device' => $device,
             'printers' => $printers,
             'today' => $today,
+            // The release the operator published. Shown as a download button
+            // so a shop that has just been approved can get started without
+            // asking anybody for a file.
+            'downloadUrl' => trim((string) Config::get('settings.agent_release_url', '')),
+            'downloadVersion' => trim((string) Config::get('settings.agent_release_version', '')),
             // Shown exactly once, on the page load straight after it is issued.
             'newToken' => (string) Session::pull('partner_new_token', ''),
             'serverUrl' => rtrim((string) Config::get('settings.app_url', Config::get('app.url', '')), '/'),
@@ -207,6 +214,94 @@ final class PartnerController extends Controller
             'New token issued. Copy it now — it is shown only on this page load, '
             . 'and any token you had before has stopped working.'
         );
+    }
+
+    /** GET /partner/prices */
+    public function prices(Request $request): Response
+    {
+        $partner = $this->partners->current();
+        if ($partner === null) {
+            return Response::redirect('/partner/login');
+        }
+        if (!$partner->isApproved() || $partner->locationId() === null) {
+            throw new HttpException(403, 'Your shop has not been approved yet.');
+        }
+
+        return $this->view('partner/prices', [
+            'title' => 'Your prices',
+            'partner' => $partner,
+            'paperSizes' => (array) Config::get('printing.paper_sizes', []),
+            'colorModes' => (array) Config::get('printing.color_modes', []),
+            'rules' => $this->pricing->simpleRulesForLocation($partner->locationId()),
+            // What a customer pays where the shop has set nothing, so the page
+            // can show the fallback rather than an empty box meaning nothing.
+            'fallback' => $this->fallbackPrices(),
+            'currencySymbol' => (string) Config::get('app.currency_symbol', "\u{20B9}"),
+        ]);
+    }
+
+    /** POST /partner/prices */
+    public function savePrices(Request $request): Response
+    {
+        $partner = $this->partners->current();
+        if ($partner === null) {
+            return Response::redirect('/partner/login');
+        }
+        if (!$partner->isApproved() || $partner->locationId() === null) {
+            throw new HttpException(403, 'Your shop has not been approved yet.');
+        }
+
+        $sizes = array_keys((array) Config::get('printing.paper_sizes', []));
+        $modes = array_keys((array) Config::get('printing.color_modes', []));
+
+        $prices = [];
+        foreach ($sizes as $size) {
+            foreach ($modes as $mode) {
+                $raw = trim((string) $request->input("price_{$size}_{$mode}", ''));
+                if ($raw === '') {
+                    continue;   // cleared: fall back to the estate-wide price
+                }
+                if (!is_numeric($raw)) {
+                    return $this->redirect('/partner/prices', 'error',
+                        sprintf('"%s" is not a price. Use numbers only, like 2 or 2.50.', $raw));
+                }
+                $paise = (int) round(((float) $raw) * 100);
+                if ($paise < 0 || $paise > 100000) {
+                    return $this->redirect('/partner/prices', 'error',
+                        'Prices must be between 0 and 1000 per page.');
+                }
+                $prices["{$size}:{$mode}"] = $paise;
+            }
+        }
+
+        $result = $this->pricing->replaceSimpleRules($partner->locationId(), $prices);
+
+        return $this->redirect('/partner/prices', 'success', sprintf(
+            'Prices saved. %d set%s. New orders use them straight away.',
+            $result['written'],
+            $result['removed'] > 0
+                ? sprintf(', %d cleared back to the standard rate', $result['removed'])
+                : ''
+        ));
+    }
+
+    /**
+     * The estate-wide price for each size and mode, where one exists.
+     *
+     * @return array<string,int>
+     */
+    private function fallbackPrices(): array
+    {
+        $out = [];
+        foreach ($this->pricing->forLocation(null) as $rule) {
+            if ($rule['location_id'] !== null || $rule['printer_id'] !== null) {
+                continue;
+            }
+            $size = $rule['paper_size'] ?? '*';
+            $mode = $rule['color_mode'] ?? '*';
+            $out[$size . ':' . $mode] = (int) $rule['price_per_page_paise'];
+        }
+        return $out;
     }
 
     /**

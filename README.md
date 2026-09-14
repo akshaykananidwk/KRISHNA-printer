@@ -31,9 +31,13 @@ no Composer, no build step. It deploys by uploading files and opening `/install`
 2. An operator sees it in **Registrations** and approves it. That approval —
    and nothing on the public form — creates the shop's location and its print
    agent, in one transaction.
-3. The owner signs in at `/partner`, presses one button and gets their agent
-   token, shown on that page load only. Nobody reads a credential down a phone.
+3. The owner signs in at `/partner`, downloads the software, and presses one
+   button for their agent token — shown on that page load only. Nobody reads a
+   credential down a phone.
 4. They paste it into the desktop app, pick their printer, and they are live.
+5. From then on the shop runs itself: its printers' live state, and its own
+   prices by paper size and colour, set at `/partner/prices` rather than by
+   asking the operator.
 
 Losing the token is not a problem: issuing a replacement is one button, and the
 one it replaces stops working immediately.

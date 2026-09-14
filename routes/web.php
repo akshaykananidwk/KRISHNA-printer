@@ -100,12 +100,14 @@ $router->group(['middleware' => ['install_guard', 'maintenance', 'https', 'sessi
     $router->get('/register', PartnerController::class . '@showRegister')->name('register');
     $router->get('/partner/login', PartnerController::class . '@showLogin')->name('partner.login');
     $router->get('/partner', PartnerController::class . '@dashboard')->name('partner.dashboard');
+    $router->get('/partner/prices', PartnerController::class . '@prices');
 
     $router->group(['middleware' => ['csrf']], function ($router): void {
         $router->post('/register', PartnerController::class . '@register');
         $router->post('/partner/login', PartnerController::class . '@login');
         $router->post('/partner/logout', PartnerController::class . '@logout');
         $router->post('/partner/token', PartnerController::class . '@issueToken');
+        $router->post('/partner/prices', PartnerController::class . '@savePrices');
     });
 });
 

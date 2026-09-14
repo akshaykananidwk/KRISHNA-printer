@@ -3283,6 +3283,114 @@ $runner->test('TP.7', 'One shop cannot reach another shop\'s page', 'the session
     );
 });
 
+$runner->group('A shop running its own shop');
+
+$runner->test('TS.1', 'An approved shop is given the download and sets its own prices', 'self-service, scoped to that shop', function () use ($baseUrl, $connectDb, $adminClient, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+
+    // TU.1 publishes a release; the shop's page must offer it as a download
+    // rather than leaving them to ask somebody for a file.
+    $shop = new HttpClient($baseUrl);
+    $shop->get('/partner/login');
+    $shop->submitForm('/partner/login', ['email' => $registrationEmail, 'password' => $registrationPassword]);
+    $dashboard = $shop->get('/partner');
+
+    $offersDownload = str_contains($dashboard['body'], 'Download the software')
+        && str_contains($dashboard['body'], 'https://example.com/Setup.exe');
+
+    // The price grid, and what it does with what is typed into it.
+    $page = $shop->get('/partner/prices');
+    if ($page['status'] !== 200) {
+        return ['pass' => false, 'actual' => 'GET /partner/prices returned ' . $page['status']];
+    }
+    $hasGrid = str_contains($page['body'], 'price_A4_bw') && str_contains($page['body'], 'price_A3_color');
+
+    $shop->submitForm('/partner/prices', [
+        'price_A4_bw' => '3.50',
+        'price_A4_color' => '12',
+        // Everything else left blank: those fall back to the standard rate
+        // rather than becoming a price of zero.
+    ]);
+
+    $locationId = (int) $db->scalar('SELECT location_id FROM partners WHERE email = ?', [$registrationEmail]);
+    $rules = $db->select(
+        'SELECT paper_size, color_mode, price_per_page_paise FROM pricing_rules
+         WHERE location_id = ? ORDER BY paper_size, color_mode',
+        [$locationId]
+    );
+    $byKey = [];
+    foreach ($rules as $rule) {
+        $byKey[$rule['paper_size'] . ':' . $rule['color_mode']] = (int) $rule['price_per_page_paise'];
+    }
+
+    // Rupees in, paise stored — money is integer paise everywhere, and 3.50
+    // becoming 350 rather than 3 is the whole point of checking it.
+    $stored = ($byKey['A4:bw'] ?? 0) === 350 && ($byKey['A4:color'] ?? 0) === 1200;
+    $noBlanks = !isset($byKey['A5:bw']) && !isset($byKey['A3:color']);
+
+    // Clearing a box removes the rule instead of setting it to nothing.
+    $shop->get('/partner/prices');
+    $shop->submitForm('/partner/prices', ['price_A4_bw' => '4', 'price_A4_color' => '']);
+    $after = (int) $db->scalar(
+        "SELECT COUNT(*) FROM pricing_rules WHERE location_id = ? AND paper_size = 'A4' AND color_mode = 'color'",
+        [$locationId]
+    );
+
+    return TestRunner::assertTrue(
+        $offersDownload && $hasGrid && $stored && $noBlanks && $after === 0,
+        'The published release is offered as a download, and the shop set its own A4 rates — '
+        . '3.50 stored as 350 paise — with blank boxes left to the standard rate and a cleared '
+        . 'box removing the rule.',
+        sprintf('download=%s grid=%s stored=%s blanks_left=%s cleared=%d rules=%s',
+            json_encode($offersDownload), json_encode($hasGrid), json_encode($stored),
+            json_encode($noBlanks), $after, json_encode($byKey))
+    );
+});
+
+$runner->test('TS.2', 'A shop cannot price, or even see, another shop', 'the session decides, never the URL', function () use ($baseUrl, $connectDb, $registrationEmail, $registrationPassword) {
+    $db = $connectDb();
+
+    // Signed out: the price page is not readable at all.
+    $anonymous = new HttpClient($baseUrl);
+    $signedOut = $anonymous->get('/partner/prices');
+
+    // A shop still waiting for approval has no location to price.
+    $pendingEmail = 'pending' . bin2hex(random_bytes(3)) . '@shop.test';
+    $pendingPassword = 'Lantern-Cobble-5521';
+    $pending = new HttpClient($baseUrl);
+    $pending->get('/register');
+    $pending->submitForm('/register', [
+        'shop_name' => 'Waiting Copy Shop', 'contact_name' => 'Waiting Owner',
+        'email' => $pendingEmail, 'phone' => '9000000044',
+        'password' => $pendingPassword, 'password_confirmation' => $pendingPassword,
+    ]);
+    $pending->get('/partner/login');
+    $pending->submitForm('/partner/login', ['email' => $pendingEmail, 'password' => $pendingPassword]);
+    $refusedPage = $pending->get('/partner/prices');
+    $refusedPost = $pending->post('/partner/prices', [
+        '_csrf_token' => $pending->csrfToken(), 'price_A4_bw' => '1',
+    ]);
+
+    // And the approved shop's own prices are untouched by any of that.
+    $locationId = (int) $db->scalar('SELECT location_id FROM partners WHERE email = ?', [$registrationEmail]);
+    $otherRules = (int) $db->scalar(
+        'SELECT COUNT(*) FROM pricing_rules WHERE location_id IS NOT NULL AND location_id <> ?',
+        [$locationId]
+    );
+
+    return TestRunner::assertTrue(
+        $signedOut['status'] >= 300
+            && $refusedPage['status'] === 403
+            && $refusedPost['status'] >= 300
+            && $otherRules === 0,
+        sprintf('Signed out it redirects (%d); a shop awaiting approval is refused (%d) and wrote '
+            . 'no rule; no other shop gained prices.',
+            $signedOut['status'], $refusedPage['status']),
+        sprintf('signed_out=%d pending_page=%d pending_post=%d other_rules=%d',
+            $signedOut['status'], $refusedPage['status'], $refusedPost['status'], $otherRules)
+    );
+});
+
 // ═══════════════════════════════════════════════════════════════════════
 // Report
 // ═══════════════════════════════════════════════════════════════════════
